@@ -1,0 +1,1643 @@
+/* Fast_Prod - Main Application Script */
+const { useState, useEffect, useMemo, useRef } = React;
+
+// Utility Helpers
+const getWeekNumber = (d) => {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  date.setUTCDate(date.getUTCDate() + 4 - (date.getUTCDay() || 7));
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((date - yearStart) / 86400000) + 1) / 7);
+  return { week: weekNo, year: date.getUTCFullYear() };
+};
+
+const MONTH_NAMES = [
+  "Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno",
+  "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"
+];
+
+// Initial Seed Data
+const INITIAL_TECHNICIANS = [
+  { id: 'tech-1', name: 'Marco Rossi', role: 'Capo Officina', avatarColor: '#f59e0b', active: true, targetHours: 40 },
+  { id: 'tech-2', name: 'Luca Bianchi', role: 'Meccanico Senior', avatarColor: '#10b981', active: true, targetHours: 40 },
+  { id: 'tech-3', name: 'Andrea Verdi', role: 'Elettrauto', avatarColor: '#06b6d4', active: true, targetHours: 40 },
+  { id: 'tech-4', name: 'Stefano Neri', role: 'Tecnico Diagnostica', avatarColor: '#8b5cf6', active: true, targetHours: 40 },
+  { id: 'tech-5', name: 'Giuseppe Viola', role: 'Meccanico Junior', avatarColor: '#ec4899', active: true, targetHours: 40 }
+];
+
+const generateSeedEntries = () => {
+  const entries = [];
+  const currentDate = new Date();
+  const currentYear = currentDate.getFullYear();
+  const currentMonth = currentDate.getMonth();
+  
+  // Seed past 3 months of data
+  INITIAL_TECHNICIANS.forEach((tech, techIdx) => {
+    for (let m = currentMonth - 2; m <= currentMonth; m++) {
+      const targetM = (m + 12) % 12;
+      const targetY = m < 0 ? currentYear - 1 : currentYear;
+      
+      // Seed 4 weeks per month
+      for (let w = 1; w <= 4; w++) {
+        const weekNum = (targetM * 4) + w;
+        
+        let pres = 38 + (techIdx % 3);
+        let worked = Math.round(pres * (0.80 + (techIdx * 0.04)));
+        let billed = Math.round(worked * (0.90 + (techIdx * 0.05)));
+        let toBeBilled = Math.round(worked * 0.08);
+
+        // Tech 1 is top performer
+        if (techIdx === 0) {
+          worked = 37;
+          billed = 42;
+          toBeBilled = 4;
+        }
+
+        entries.push({
+          id: `entry-${tech.id}-${targetY}-W${weekNum}`,
+          technicianId: tech.id,
+          weekNumber: weekNum,
+          month: targetM,
+          year: targetY,
+          hoursPresence: pres,
+          hoursWorked: worked,
+          hoursBilled: billed,
+          hoursToBeBilled: toBeBilled,
+          notes: 'Tagliandi e interventi programmato'
+        });
+      }
+    }
+  });
+  return entries;
+};
+
+// Main App Component
+function App() {
+  const [technicians, setTechnicians] = useState(() => {
+    try {
+      const saved = localStorage.getItem('fast_prod_technicians');
+      return saved ? JSON.parse(saved) : INITIAL_TECHNICIANS;
+    } catch (e) {
+      return INITIAL_TECHNICIANS;
+    }
+  });
+
+  const [entries, setEntries] = useState(() => {
+    try {
+      const saved = localStorage.getItem('fast_prod_entries');
+      return saved ? JSON.parse(saved) : generateSeedEntries();
+    } catch (e) {
+      return generateSeedEntries();
+    }
+  });
+
+  const [currentTab, setCurrentTab] = useState('dashboard'); // dashboard, weekly, monthly, yearly, technicians, export
+  
+  const now = new Date();
+  const currentWeekInfo = getWeekNumber(now);
+  const [selectedWeek, setSelectedWeek] = useState(currentWeekInfo.week || 38);
+  const [selectedYear, setSelectedYear] = useState(now.getFullYear());
+  const [selectedMonth, setSelectedMonth] = useState(now.getMonth());
+
+  // Save state to localStorage safely
+  useEffect(() => {
+    try {
+      localStorage.setItem('fast_prod_technicians', JSON.stringify(technicians));
+    } catch (e) {}
+  }, [technicians]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('fast_prod_entries', JSON.stringify(entries));
+    } catch (e) {}
+  }, [entries]);
+
+  // Compute KPI metrics helper
+  const calculateMetrics = (entryList) => {
+    const presence = entryList.reduce((acc, curr) => acc + (Number(curr.hoursPresence) || 0), 0);
+    const worked = entryList.reduce((acc, curr) => acc + (Number(curr.hoursWorked) || 0), 0);
+    const billed = entryList.reduce((acc, curr) => acc + (Number(curr.hoursBilled) || 0), 0);
+    const toBeBilled = entryList.reduce((acc, curr) => acc + (Number(curr.hoursToBeBilled) || 0), 0);
+
+    const productivity = presence > 0 ? (worked / presence) * 100 : 0;
+    const efficiency = worked > 0 ? (billed / worked) * 100 : 0;
+    const globalRendimento = presence > 0 ? (billed / presence) * 100 : 0;
+    const potentialEfficiency = worked > 0 ? ((billed + toBeBilled) / worked) * 100 : 0;
+
+    return {
+      presence,
+      worked,
+      billed,
+      toBeBilled,
+      productivity,
+      efficiency,
+      globalRendimento,
+      potentialEfficiency
+    };
+  };
+
+  // Find Top Performer 🏆 for a set of entries
+  const getTopPerformer = (filteredEntries) => {
+    if (!filteredEntries || filteredEntries.length === 0) return null;
+
+    const techStats = {};
+    filteredEntries.forEach(entry => {
+      if (!techStats[entry.technicianId]) {
+        techStats[entry.technicianId] = {
+          presence: 0,
+          worked: 0,
+          billed: 0,
+          toBeBilled: 0
+        };
+      }
+      techStats[entry.technicianId].presence += Number(entry.hoursPresence) || 0;
+      techStats[entry.technicianId].worked += Number(entry.hoursWorked) || 0;
+      techStats[entry.technicianId].billed += Number(entry.hoursBilled) || 0;
+      techStats[entry.technicianId].toBeBilled += Number(entry.hoursToBeBilled) || 0;
+    });
+
+    let bestTechId = null;
+    let maxScore = -1;
+    let bestMetrics = null;
+
+    Object.keys(techStats).forEach(techId => {
+      const stats = techStats[techId];
+      if (stats.presence > 0 && stats.worked > 0) {
+        const prod = (stats.worked / stats.presence) * 100;
+        const eff = (stats.billed / stats.worked) * 100;
+        const score = (prod * 0.5) + (eff * 0.5);
+
+        if (score > maxScore) {
+          maxScore = score;
+          bestTechId = techId;
+          bestMetrics = {
+            productivity: prod,
+            efficiency: eff,
+            score
+          };
+        }
+      }
+    });
+
+    if (!bestTechId) return null;
+
+    const technician = technicians.find(t => t.id === bestTechId);
+    return technician ? { ...technician, metrics: bestMetrics } : null;
+  };
+
+  const triggerConfetti = () => {
+    if (window.confetti) {
+      window.confetti({
+        particleCount: 100,
+        spread: 70,
+        origin: { y: 0.6 }
+      });
+    }
+  };
+
+  return (
+    <div className="flex flex-col min-h-screen">
+      {/* Navigation Bar */}
+      <header className="no-print bg-[#111722]/90 backdrop-blur-md border-b border-gray-800 sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
+          
+          {/* Logo */}
+          <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setCurrentTab('dashboard')}>
+            <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-amber-500 to-yellow-300 flex items-center justify-center text-slate-950 font-black shadow-lg shadow-amber-500/20">
+              ⚡
+            </div>
+            <div>
+              <div className="flex items-center space-x-2">
+                <span className="text-2xl font-extrabold tracking-tight bg-gradient-to-r from-amber-400 via-amber-200 to-yellow-400 bg-clip-text text-transparent">
+                  Fast_Prod
+                </span>
+                <span className="text-xs uppercase font-bold px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  Officina
+                </span>
+              </div>
+              <p className="text-xs text-gray-400 font-medium">Gestione Produttività ed Efficienza Tecnici</p>
+            </div>
+          </div>
+
+          {/* Desktop Nav */}
+          <nav className="hidden md:flex items-center space-x-1 bg-gray-900/60 p-1.5 rounded-xl border border-gray-800">
+            <button
+              onClick={() => setCurrentTab('dashboard')}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all ${
+                currentTab === 'dashboard'
+                  ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+                  : 'text-gray-300 hover:text-white hover:bg-gray-800/60'
+              }`}
+            >
+              <span>📊 Dashboard</span>
+            </button>
+            <button
+              onClick={() => setCurrentTab('weekly')}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all ${
+                currentTab === 'weekly'
+                  ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+                  : 'text-gray-300 hover:text-white hover:bg-gray-800/60'
+              }`}
+            >
+              <span>📅 Settimanale</span>
+            </button>
+            <button
+              onClick={() => setCurrentTab('monthly')}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all ${
+                currentTab === 'monthly'
+                  ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+                  : 'text-gray-300 hover:text-white hover:bg-gray-800/60'
+              }`}
+            >
+              <span>🗓️ Riepilogo Mensile</span>
+            </button>
+            <button
+              onClick={() => setCurrentTab('yearly')}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all ${
+                currentTab === 'yearly'
+                  ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+                  : 'text-gray-300 hover:text-white hover:bg-gray-800/60'
+              }`}
+            >
+              <span>📈 Riepilogo Annuale</span>
+            </button>
+            <button
+              onClick={() => setCurrentTab('technicians')}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all ${
+                currentTab === 'technicians'
+                  ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+                  : 'text-gray-300 hover:text-white hover:bg-gray-800/60'
+              }`}
+            >
+              <span>👨‍🔧 Tecnici ({technicians.filter(t => t.active).length})</span>
+            </button>
+            <button
+              onClick={() => setCurrentTab('export')}
+              className={`flex items-center space-x-2 px-4 py-2 rounded-lg font-medium text-sm transition-all ${
+                currentTab === 'export'
+                  ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/20'
+                  : 'text-gray-300 hover:text-white hover:bg-gray-800/60'
+              }`}
+            >
+              <span>🖨️ Stampa & Esporta</span>
+            </button>
+          </nav>
+
+          {/* Print Quick Button */}
+          <div className="flex items-center space-x-3">
+            <button
+              onClick={() => window.print()}
+              className="btn-dark text-xs sm:text-sm"
+              title="Stampa subito la vista corrente"
+            >
+              <span>🖨️ Stampa Report</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Mobile Nav */}
+        <div className="md:hidden flex overflow-x-auto px-4 py-2 border-t border-gray-800 space-x-2 text-xs">
+          <button onClick={() => setCurrentTab('dashboard')} className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${currentTab === 'dashboard' ? 'bg-amber-500 text-black font-bold' : 'bg-gray-800 text-gray-300'}`}>Dashboard</button>
+          <button onClick={() => setCurrentTab('weekly')} className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${currentTab === 'weekly' ? 'bg-amber-500 text-black font-bold' : 'bg-gray-800 text-gray-300'}`}>Settimanale</button>
+          <button onClick={() => setCurrentTab('monthly')} className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${currentTab === 'monthly' ? 'bg-amber-500 text-black font-bold' : 'bg-gray-800 text-gray-300'}`}>Mensile</button>
+          <button onClick={() => setCurrentTab('yearly')} className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${currentTab === 'yearly' ? 'bg-amber-500 text-black font-bold' : 'bg-gray-800 text-gray-300'}`}>Annuale</button>
+          <button onClick={() => setCurrentTab('technicians')} className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${currentTab === 'technicians' ? 'bg-amber-500 text-black font-bold' : 'bg-gray-800 text-gray-300'}`}>Tecnici</button>
+          <button onClick={() => setCurrentTab('export')} className={`px-3 py-1.5 rounded-lg whitespace-nowrap ${currentTab === 'export' ? 'bg-amber-500 text-black font-bold' : 'bg-gray-800 text-gray-300'}`}>Esporta</button>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        {currentTab === 'dashboard' && (
+          <DashboardView
+            entries={entries}
+            technicians={technicians}
+            calculateMetrics={calculateMetrics}
+            getTopPerformer={getTopPerformer}
+            triggerConfetti={triggerConfetti}
+            onNavigate={(tab) => setCurrentTab(tab)}
+          />
+        )}
+
+        {currentTab === 'weekly' && (
+          <WeeklyView
+            entries={entries}
+            setEntries={setEntries}
+            technicians={technicians}
+            selectedWeek={selectedWeek}
+            setSelectedWeek={setSelectedWeek}
+            selectedYear={selectedYear}
+            setSelectedYear={setSelectedYear}
+            calculateMetrics={calculateMetrics}
+            getTopPerformer={getTopPerformer}
+            triggerConfetti={triggerConfetti}
+          />
+        )}
+
+        {currentTab === 'monthly' && (
+          <MonthlyView
+            entries={entries}
+            technicians={technicians}
+            selectedMonth={selectedMonth}
+            setSelectedMonth={setSelectedMonth}
+            selectedYear={selectedYear}
+            setSelectedYear={setSelectedYear}
+            calculateMetrics={calculateMetrics}
+            getTopPerformer={getTopPerformer}
+            triggerConfetti={triggerConfetti}
+          />
+        )}
+
+        {currentTab === 'yearly' && (
+          <YearlyView
+            entries={entries}
+            technicians={technicians}
+            selectedYear={selectedYear}
+            setSelectedYear={setSelectedYear}
+            calculateMetrics={calculateMetrics}
+            getTopPerformer={getTopPerformer}
+          />
+        )}
+
+        {currentTab === 'technicians' && (
+          <TechniciansView
+            technicians={technicians}
+            setTechnicians={setTechnicians}
+            entries={entries}
+          />
+        )}
+
+        {currentTab === 'export' && (
+          <ExportView
+            entries={entries}
+            setEntries={setEntries}
+            technicians={technicians}
+            setTechnicians={setTechnicians}
+            calculateMetrics={calculateMetrics}
+          />
+        )}
+      </main>
+
+      {/* Print template */}
+      <div className="print-only p-8 bg-white text-black">
+        <div className="border-b-2 border-gray-900 pb-4 mb-6 flex justify-between items-center">
+          <div>
+            <h1 className="text-3xl font-bold uppercase tracking-wider">Fast_Prod - Report Officina</h1>
+            <p className="text-sm text-gray-600">Riepilogo Ore, Produttività ed Efficienza Tecnici</p>
+          </div>
+          <div className="text-right text-sm">
+            <p>Data Stampa: {new Date().toLocaleDateString('it-IT')}</p>
+            <p className="font-semibold">Officina Meccanica</p>
+          </div>
+        </div>
+
+        <div className="mb-6">
+          <h2 className="text-xl font-bold mb-2">Totali Generali Officina</h2>
+          {(() => {
+            const totals = calculateMetrics(entries);
+            return (
+              <table className="w-full border-collapse border border-gray-400 text-sm">
+                <thead>
+                  <tr className="bg-gray-100">
+                    <th className="border p-2">Ore Presenza</th>
+                    <th className="border p-2">Ore Lavorate</th>
+                    <th className="border p-2">Ore Fatturate</th>
+                    <th className="border p-2">Ore da Fatturare</th>
+                    <th className="border p-2">Produttività %</th>
+                    <th className="border p-2">Efficienza %</th>
+                    <th className="border p-2">Rendimento Globale %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr className="text-center font-bold">
+                    <td className="border p-2">{totals.presence}h</td>
+                    <td className="border p-2">{totals.worked}h</td>
+                    <td className="border p-2">{totals.billed}h</td>
+                    <td className="border p-2">{totals.toBeBilled}h</td>
+                    <td className="border p-2">{totals.productivity.toFixed(1)}%</td>
+                    <td className="border p-2">{totals.efficiency.toFixed(1)}%</td>
+                    <td className="border p-2">{totals.globalRendimento.toFixed(1)}%</td>
+                  </tr>
+                </tbody>
+              </table>
+            );
+          })()}
+        </div>
+
+        <div>
+          <h2 className="text-xl font-bold mb-2">Dettaglio Tecnici</h2>
+          <table className="w-full border-collapse border border-gray-400 text-sm">
+            <thead>
+              <tr className="bg-gray-100">
+                <th className="border p-2">Tecnico</th>
+                <th className="border p-2">Qualifica</th>
+                <th className="border p-2">Presenza</th>
+                <th className="border p-2">Lavorate</th>
+                <th className="border p-2">Fatturate</th>
+                <th className="border p-2">Da Fatturare</th>
+                <th className="border p-2">Produttività</th>
+                <th className="border p-2">Efficienza</th>
+              </tr>
+            </thead>
+            <tbody>
+              {technicians.filter(t => t.active).map(tech => {
+                const techEntries = entries.filter(e => e.technicianId === tech.id);
+                const stats = calculateMetrics(techEntries);
+                const topPerformer = getTopPerformer(entries);
+                const isTop = topPerformer && topPerformer.id === tech.id;
+                return (
+                  <tr key={tech.id} className="text-center">
+                    <td className="border p-2 font-semibold text-left">
+                      {isTop ? '🏆 ' : ''}{tech.name}
+                    </td>
+                    <td className="border p-2">{tech.role}</td>
+                    <td className="border p-2">{stats.presence}h</td>
+                    <td className="border p-2">{stats.worked}h</td>
+                    <td className="border p-2">{stats.billed}h</td>
+                    <td className="border p-2">{stats.toBeBilled}h</td>
+                    <td className="border p-2 font-bold">{stats.productivity.toFixed(1)}%</td>
+                    <td className="border p-2 font-bold">{stats.efficiency.toFixed(1)}%</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-12 pt-6 border-t border-gray-300 flex justify-between text-sm text-gray-600">
+          <div>Firma Capo Officina: ___________________________</div>
+          <div>Firma Responsabile: ___________________________</div>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <footer className="no-print border-t border-gray-800/60 py-6 mt-12 bg-gray-950/40 text-center text-xs text-gray-500">
+        <p>Fast_Prod - Sistema Gestione Produttività ed Efficienza Officina</p>
+        <p className="mt-1 text-gray-600">Formula Produttività: (Lavorate / Presenza) × 100 | Formula Efficienza: (Fatturate / Lavorate) × 100</p>
+      </footer>
+    </div>
+  );
+}
+
+// ----------------------------------------------------
+// 1. DASHBOARD VIEW
+// ----------------------------------------------------
+function DashboardView({ entries, technicians, calculateMetrics, getTopPerformer, triggerConfetti, onNavigate }) {
+  const globalMetrics = useMemo(() => calculateMetrics(entries), [entries]);
+  const topPerformer = useMemo(() => getTopPerformer(entries), [entries, technicians]);
+
+  return (
+    <div className="space-y-8">
+      
+      {/* Header Title */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3">
+            <span>Dashboard Officina</span>
+            <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-medium">
+              Live Data
+            </span>
+          </h1>
+          <p className="text-sm text-gray-400 mt-1">Panoramica completa delle ore, produttività ed efficienza della squadra.</p>
+        </div>
+
+        <div className="flex gap-3">
+          <button onClick={() => onNavigate('weekly')} className="btn-gold">
+            <span>➕ Inserisci Ore Settimana</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Top Performer Banner Card 🏆 */}
+      {topPerformer && (
+        <div className="glass-panel trophy-card-gold p-6 rounded-2xl relative overflow-hidden flex flex-col md:flex-row items-center justify-between gap-6">
+          <div className="flex items-center gap-5">
+            <div className="relative">
+              <div className="w-20 h-20 rounded-2xl bg-gradient-to-tr from-amber-400 via-yellow-300 to-amber-500 flex items-center justify-center text-slate-950 font-black shadow-xl shadow-amber-500/30 trophy-badge">
+                <span className="text-4xl">🏆</span>
+              </div>
+              <span className="absolute -top-2 -right-2 text-xs font-black uppercase px-2 py-0.5 rounded-full bg-yellow-400 text-black shadow">
+                #1 TOP
+              </span>
+            </div>
+
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-extrabold uppercase tracking-widest text-amber-400">
+                  Dipendente Più Produttivo del Periodo
+                </span>
+                <button
+                  onClick={triggerConfetti}
+                  className="text-xs bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 px-2 py-0.5 rounded-full border border-amber-500/30 transition-all"
+                  title="Festeggia con coriandoli!"
+                >
+                  🎉 Festeggia!
+                </button>
+              </div>
+              <h2 className="text-2xl font-black text-white mt-1">{topPerformer.name}</h2>
+              <p className="text-sm text-gray-300">{topPerformer.role}</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-6 bg-slate-900/60 p-4 rounded-xl border border-amber-500/20">
+            <div className="text-center px-3">
+              <p className="text-xs text-gray-400 uppercase font-semibold">Produttività</p>
+              <p className="text-xl font-extrabold text-amber-400 font-mono-num">
+                {topPerformer.metrics.productivity.toFixed(1)}%
+              </p>
+            </div>
+            <div className="h-8 w-px bg-gray-800"></div>
+            <div className="text-center px-3">
+              <p className="text-xs text-gray-400 uppercase font-semibold">Efficienza</p>
+              <p className="text-xl font-extrabold text-emerald-400 font-mono-num">
+                {topPerformer.metrics.efficiency.toFixed(1)}%
+              </p>
+            </div>
+            <div className="h-8 w-px bg-gray-800"></div>
+            <div className="text-center px-3">
+              <p className="text-xs text-gray-400 uppercase font-semibold">Indice Globale</p>
+              <p className="text-xl font-extrabold text-cyan-400 font-mono-num">
+                {topPerformer.metrics.score.toFixed(1)}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* KPI Stats Grid */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+        <div className="glass-panel p-5 rounded-2xl border-l-4 border-l-cyan-500">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Ore Presenza Totali</p>
+              <h3 className="text-3xl font-extrabold text-white mt-2 font-mono-num">{globalMetrics.presence} h</h3>
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center font-bold text-lg">
+              ⏱️
+            </div>
+          </div>
+          <p className="text-xs text-gray-400 mt-3">Totale ore timbratore squadra</p>
+        </div>
+
+        <div className="glass-panel p-5 rounded-2xl border-l-4 border-l-amber-500">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Ore Lavorate (Commessa)</p>
+              <h3 className="text-3xl font-extrabold text-white mt-2 font-mono-num">{globalMetrics.worked} h</h3>
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center font-bold text-lg">
+              🔧
+            </div>
+          </div>
+          <p className="text-xs text-gray-400 mt-3">Ore effettive su ordini di lavoro</p>
+        </div>
+
+        <div className="glass-panel p-5 rounded-2xl border-l-4 border-l-emerald-500">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Ore Fatturate</p>
+              <h3 className="text-3xl font-extrabold text-white mt-2 font-mono-num">{globalMetrics.billed} h</h3>
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-bold text-lg">
+              💶
+            </div>
+          </div>
+          <p className="text-xs text-gray-400 mt-3">Ore addebitate in fattura</p>
+        </div>
+
+        <div className="glass-panel p-5 rounded-2xl border-l-4 border-l-purple-500">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Ore da Fatturare</p>
+              <h3 className="text-3xl font-extrabold text-white mt-2 font-mono-num">{globalMetrics.toBeBilled} h</h3>
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center font-bold text-lg">
+              📋
+            </div>
+          </div>
+          <p className="text-xs text-gray-400 mt-3">Lavori in attesa di fatturazione</p>
+        </div>
+      </div>
+
+      {/* KPI Percentages */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between">
+          <div className="flex justify-between items-center mb-4">
+            <span className="text-sm font-bold uppercase tracking-wider text-amber-400">Produttività Media</span>
+            <span className="text-xs bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-mono">
+              (Lavorate / Presenza)
+            </span>
+          </div>
+          <div className="flex items-baseline space-x-2 my-2">
+            <span className="text-4xl font-extrabold text-white font-mono-num">
+              {globalMetrics.productivity.toFixed(1)}%
+            </span>
+            <span className="text-xs text-gray-400">target: 85.0%</span>
+          </div>
+          <div className="w-full bg-gray-800 h-3 rounded-full overflow-hidden mt-3">
+            <div
+              className="bg-gradient-to-r from-amber-500 to-yellow-300 h-full transition-all duration-500"
+              style={{ width: `${Math.min(100, globalMetrics.productivity)}%` }}
+            ></div>
+          </div>
+        </div>
+
+        <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between">
+          <div className="flex justify-between items-center mb-4">
+            <span className="text-sm font-bold uppercase tracking-wider text-emerald-400">Efficienza Media</span>
+            <span className="text-xs bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded font-mono">
+              (Fatturate / Lavorate)
+            </span>
+          </div>
+          <div className="flex items-baseline space-x-2 my-2">
+            <span className="text-4xl font-extrabold text-white font-mono-num">
+              {globalMetrics.efficiency.toFixed(1)}%
+            </span>
+            <span className="text-xs text-gray-400">target: 100.0%</span>
+          </div>
+          <div className="w-full bg-gray-800 h-3 rounded-full overflow-hidden mt-3">
+            <div
+              className="bg-gradient-to-r from-emerald-500 to-teal-300 h-full transition-all duration-500"
+              style={{ width: `${Math.min(100, globalMetrics.efficiency)}%` }}
+            ></div>
+          </div>
+        </div>
+
+        <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between">
+          <div className="flex justify-between items-center mb-4">
+            <span className="text-sm font-bold uppercase tracking-wider text-cyan-400">Rendimento Globale</span>
+            <span className="text-xs bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 px-2 py-0.5 rounded font-mono">
+              (Fatturate / Presenza)
+            </span>
+          </div>
+          <div className="flex items-baseline space-x-2 my-2">
+            <span className="text-4xl font-extrabold text-white font-mono-num">
+              {globalMetrics.globalRendimento.toFixed(1)}%
+            </span>
+            <span className="text-xs text-gray-400">Efficacia totale</span>
+          </div>
+          <div className="w-full bg-gray-800 h-3 rounded-full overflow-hidden mt-3">
+            <div
+              className="bg-gradient-to-r from-cyan-500 to-blue-400 h-full transition-all duration-500"
+              style={{ width: `${Math.min(100, globalMetrics.globalRendimento)}%` }}
+            ></div>
+          </div>
+        </div>
+      </div>
+
+      {/* Technician Overview Table */}
+      <div className="glass-panel rounded-2xl p-6">
+        <div className="flex justify-between items-center mb-6">
+          <div>
+            <h3 className="text-xl font-bold text-white">Classifica e Rendimento Tecnici</h3>
+            <p className="text-xs text-gray-400">L'icona coppa 🏆 indica il tecnico più produttivo ed efficiente.</p>
+          </div>
+          <button onClick={() => onNavigate('technicians')} className="text-xs text-amber-400 hover:underline">
+            Gestisci Tecnici →
+          </button>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-gray-800 text-gray-400 text-xs uppercase font-bold tracking-wider">
+                <th className="py-3 px-4">Tecnico</th>
+                <th className="py-3 px-4">Qualifica</th>
+                <th className="py-3 px-4 text-center">Presenza</th>
+                <th className="py-3 px-4 text-center">Lavorate</th>
+                <th className="py-3 px-4 text-center">Fatturate</th>
+                <th className="py-3 px-4 text-center">Da Fatturare</th>
+                <th className="py-3 px-4 text-center">Produttività %</th>
+                <th className="py-3 px-4 text-center">Efficienza %</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/50 text-sm">
+              {technicians.filter(t => t.active).map((tech) => {
+                const techEntries = entries.filter(e => e.technicianId === tech.id);
+                const stats = calculateMetrics(techEntries);
+                const isTop = topPerformer && topPerformer.id === tech.id;
+
+                return (
+                  <tr key={tech.id} className={`hover:bg-gray-800/30 transition-colors ${isTop ? 'bg-amber-500/5' : ''}`}>
+                    <td className="py-3.5 px-4 font-semibold text-white flex items-center space-x-3">
+                      <div
+                        className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-black text-black shadow"
+                        style={{ backgroundColor: tech.avatarColor || '#f59e0b' }}
+                      >
+                        {tech.name.split(' ').map(n => n[0]).join('')}
+                      </div>
+                      <span>{tech.name}</span>
+                      {isTop && (
+                        <span className="trophy-badge px-2 py-0.5 rounded-full text-xs font-black flex items-center gap-1 shadow-md">
+                          🏆 TOP
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-3.5 px-4 text-gray-400">{tech.role}</td>
+                    <td className="py-3.5 px-4 text-center font-mono-num">{stats.presence} h</td>
+                    <td className="py-3.5 px-4 text-center font-mono-num">{stats.worked} h</td>
+                    <td className="py-3.5 px-4 text-center font-mono-num text-emerald-400 font-bold">{stats.billed} h</td>
+                    <td className="py-3.5 px-4 text-center font-mono-num text-purple-400">{stats.toBeBilled} h</td>
+                    <td className="py-3.5 px-4 text-center font-mono-num">
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                        stats.productivity >= 85 ? 'badge-green' : stats.productivity >= 70 ? 'badge-amber' : 'badge-red'
+                      }`}>
+                        {stats.productivity.toFixed(1)}%
+                      </span>
+                    </td>
+                    <td className="py-3.5 px-4 text-center font-mono-num">
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-bold ${
+                        stats.efficiency >= 100 ? 'badge-green' : stats.efficiency >= 85 ? 'badge-amber' : 'badge-red'
+                      }`}>
+                        {stats.efficiency.toFixed(1)}%
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------
+// 2. WEEKLY VIEW (Inserimento & Calcolo Settimanale)
+// ----------------------------------------------------
+function WeeklyView({
+  entries,
+  setEntries,
+  technicians,
+  selectedWeek,
+  setSelectedWeek,
+  selectedYear,
+  setSelectedYear,
+  calculateMetrics,
+  getTopPerformer,
+  triggerConfetti
+}) {
+  const activeTechnicians = useMemo(() => technicians.filter(t => t.active), [technicians]);
+
+  // Filter entries for the selected week & year
+  const weekEntries = useMemo(() => {
+    return entries.filter(e => e.weekNumber === selectedWeek && e.year === selectedYear);
+  }, [entries, selectedWeek, selectedYear]);
+
+  // Helper to get entry state for a technician
+  const getTechWeekData = (techId) => {
+    const found = weekEntries.find(e => e.technicianId === techId);
+    return found || {
+      hoursPresence: 0,
+      hoursWorked: 0,
+      hoursBilled: 0,
+      hoursToBeBilled: 0,
+      notes: ''
+    };
+  };
+
+  // Handle cell input change
+  const handleInputChange = (techId, field, rawValue) => {
+    setEntries(prev => {
+      const existingIdx = prev.findIndex(e => e.technicianId === techId && e.weekNumber === selectedWeek && e.year === selectedYear);
+      const val = field === 'notes' ? rawValue : (rawValue === '' ? 0 : Math.max(0, parseFloat(rawValue) || 0));
+
+      if (existingIdx >= 0) {
+        const updated = [...prev];
+        updated[existingIdx] = {
+          ...updated[existingIdx],
+          [field]: val
+        };
+        return updated;
+      } else {
+        const newEntry = {
+          id: `entry-${techId}-${selectedYear}-W${selectedWeek}`,
+          technicianId: techId,
+          weekNumber: selectedWeek,
+          month: Math.max(0, Math.min(11, Math.floor((selectedWeek - 1) / 4.33))),
+          year: selectedYear,
+          hoursPresence: field === 'hoursPresence' ? val : 0,
+          hoursWorked: field === 'hoursWorked' ? val : 0,
+          hoursBilled: field === 'hoursBilled' ? val : 0,
+          hoursToBeBilled: field === 'hoursToBeBilled' ? val : 0,
+          notes: field === 'notes' ? rawValue : ''
+        };
+        return [...prev, newEntry];
+      }
+    });
+  };
+
+  const weekTopPerformer = useMemo(() => getTopPerformer(weekEntries), [weekEntries, technicians]);
+  const weekMetrics = useMemo(() => calculateMetrics(weekEntries), [weekEntries]);
+
+  return (
+    <div className="space-y-8">
+      {/* Header & Week Selector */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3">
+            <span>Gestione Settimanale</span>
+            <span className="text-xs px-2.5 py-1 bg-amber-500/20 text-amber-300 rounded border border-amber-500/30">
+              Settimana {selectedWeek}
+            </span>
+          </h1>
+          <p className="text-sm text-gray-400 mt-1">Inserisci o modifica le ore di presenza, lavorate e fatturate dei tecnici.</p>
+        </div>
+
+        {/* Controls */}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setSelectedWeek(prev => Math.max(1, prev - 1))}
+            className="btn-dark text-sm"
+          >
+            ← Settimana Prec.
+          </button>
+          
+          <select
+            value={selectedWeek}
+            onChange={(e) => setSelectedWeek(Number(e.target.value))}
+            className="workshop-select"
+          >
+            {Array.from({ length: 52 }, (_, i) => i + 1).map(w => (
+              <option key={w} value={w}>Settimana {w}</option>
+            ))}
+          </select>
+
+          <select
+            value={selectedYear}
+            onChange={(e) => setSelectedYear(Number(e.target.value))}
+            className="workshop-select"
+          >
+            {[2025, 2026, 2027].map(y => (
+              <option key={y} value={y}>{y}</option>
+            ))}
+          </select>
+
+          <button
+            onClick={() => setSelectedWeek(prev => Math.min(52, prev + 1))}
+            className="btn-dark text-sm"
+          >
+            Settimana Succ. →
+          </button>
+        </div>
+      </div>
+
+      {/* Week Top Performer Banner 🏆 */}
+      {weekTopPerformer && (
+        <div className="glass-panel p-4 rounded-xl border border-amber-500/30 bg-amber-500/5 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <span className="text-3xl">🏆</span>
+            <div>
+              <span className="text-xs font-bold uppercase text-amber-400">Top Performer Settimana {selectedWeek}</span>
+              <p className="text-lg font-extrabold text-white">{weekTopPerformer.name} ({weekTopPerformer.role})</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-4 font-mono-num text-sm">
+            <div>
+              <span className="text-xs text-gray-400 block">Produttività</span>
+              <span className="font-bold text-amber-400">{weekTopPerformer.metrics.productivity.toFixed(1)}%</span>
+            </div>
+            <div>
+              <span className="text-xs text-gray-400 block">Efficienza</span>
+              <span className="font-bold text-emerald-400">{weekTopPerformer.metrics.efficiency.toFixed(1)}%</span>
+            </div>
+            <button onClick={triggerConfetti} className="btn-dark text-xs ml-2">🎉</button>
+          </div>
+        </div>
+      )}
+
+      {/* Interactive Grid */}
+      <div className="glass-panel rounded-2xl p-6">
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-gray-800 text-gray-400 text-xs uppercase font-bold tracking-wider">
+                <th className="py-3 px-4 min-w-[200px]">Tecnico</th>
+                <th className="py-3 px-4 w-32 text-center">Ore Presenza (Op)</th>
+                <th className="py-3 px-4 w-32 text-center">Ore Lavorate (Ol)</th>
+                <th className="py-3 px-4 w-32 text-center">Ore Fatturate (Of)</th>
+                <th className="py-3 px-4 w-32 text-center">Da Fatturare (Odf)</th>
+                <th className="py-3 px-4 text-center">Produttività %</th>
+                <th className="py-3 px-4 text-center">Efficienza %</th>
+                <th className="py-3 px-4 min-w-[180px]">Note Commessa</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/50 text-sm">
+              {activeTechnicians.map((tech) => {
+                const data = getTechWeekData(tech.id);
+                const isTop = weekTopPerformer && weekTopPerformer.id === tech.id;
+
+                const pres = Number(data.hoursPresence) || 0;
+                const worked = Number(data.hoursWorked) || 0;
+                const billed = Number(data.hoursBilled) || 0;
+
+                const prod = pres > 0 ? (worked / pres) * 100 : 0;
+                const eff = worked > 0 ? (billed / worked) * 100 : 0;
+
+                return (
+                  <tr key={tech.id} className={`hover:bg-gray-800/20 ${isTop ? 'bg-amber-500/5' : ''}`}>
+                    <td className="py-3 px-4 font-semibold text-white">
+                      <div className="flex items-center space-x-2">
+                        <div
+                          className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-black"
+                          style={{ backgroundColor: tech.avatarColor || '#f59e0b' }}
+                        >
+                          {tech.name[0]}
+                        </div>
+                        <span>{tech.name}</span>
+                        {isTop && <span title="Top Performer della settimana">🏆</span>}
+                      </div>
+                    </td>
+
+                    <td className="py-2 px-2">
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0"
+                        value={data.hoursPresence || ''}
+                        onChange={(e) => handleInputChange(tech.id, 'hoursPresence', e.target.value)}
+                        placeholder="0"
+                        className="workshop-input text-center"
+                      />
+                    </td>
+
+                    <td className="py-2 px-2">
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0"
+                        value={data.hoursWorked || ''}
+                        onChange={(e) => handleInputChange(tech.id, 'hoursWorked', e.target.value)}
+                        placeholder="0"
+                        className="workshop-input text-center text-amber-300"
+                      />
+                    </td>
+
+                    <td className="py-2 px-2">
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0"
+                        value={data.hoursBilled || ''}
+                        onChange={(e) => handleInputChange(tech.id, 'hoursBilled', e.target.value)}
+                        placeholder="0"
+                        className="workshop-input text-center text-emerald-300 font-bold"
+                      />
+                    </td>
+
+                    <td className="py-2 px-2">
+                      <input
+                        type="number"
+                        step="0.5"
+                        min="0"
+                        value={data.hoursToBeBilled || ''}
+                        onChange={(e) => handleInputChange(tech.id, 'hoursToBeBilled', e.target.value)}
+                        placeholder="0"
+                        className="workshop-input text-center text-purple-300"
+                      />
+                    </td>
+
+                    <td className="py-3 px-4 text-center font-mono-num">
+                      <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                        prod >= 85 ? 'badge-green' : prod >= 70 ? 'badge-amber' : 'badge-red'
+                      }`}>
+                        {prod.toFixed(1)}%
+                      </span>
+                    </td>
+
+                    <td className="py-3 px-4 text-center font-mono-num">
+                      <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                        eff >= 100 ? 'badge-green' : eff >= 85 ? 'badge-amber' : 'badge-red'
+                      }`}>
+                        {eff.toFixed(1)}%
+                      </span>
+                    </td>
+
+                    <td className="py-2 px-2">
+                      <input
+                        type="text"
+                        value={data.notes || ''}
+                        onChange={(e) => handleInputChange(tech.id, 'notes', e.target.value)}
+                        placeholder="Note o commesse..."
+                        className="workshop-input text-xs font-sans"
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+
+            <tfoot>
+              <tr className="border-t-2 border-gray-700 font-bold text-white bg-gray-900/60">
+                <td className="py-3 px-4">TOTALE SETTIMANA {selectedWeek}</td>
+                <td className="py-3 px-4 text-center font-mono-num text-cyan-400">{weekMetrics.presence} h</td>
+                <td className="py-3 px-4 text-center font-mono-num text-amber-400">{weekMetrics.worked} h</td>
+                <td className="py-3 px-4 text-center font-mono-num text-emerald-400">{weekMetrics.billed} h</td>
+                <td className="py-3 px-4 text-center font-mono-num text-purple-400">{weekMetrics.toBeBilled} h</td>
+                <td className="py-3 px-4 text-center font-mono-num text-amber-400">{weekMetrics.productivity.toFixed(1)}%</td>
+                <td className="py-3 px-4 text-center font-mono-num text-emerald-400">{weekMetrics.efficiency.toFixed(1)}%</td>
+                <td className="py-3 px-4 text-xs text-gray-400 italic">I dati si salvano automaticamente</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------
+// 3. MONTHLY VIEW
+// ----------------------------------------------------
+function MonthlyView({
+  entries,
+  technicians,
+  selectedMonth,
+  setSelectedMonth,
+  selectedYear,
+  setSelectedYear,
+  calculateMetrics,
+  getTopPerformer,
+  triggerConfetti
+}) {
+  const chartRef = useRef(null);
+
+  const monthEntries = useMemo(() => {
+    return entries.filter(e => e.month === selectedMonth && e.year === selectedYear);
+  }, [entries, selectedMonth, selectedYear]);
+
+  const monthMetrics = useMemo(() => calculateMetrics(monthEntries), [monthEntries]);
+  const monthTopPerformer = useMemo(() => getTopPerformer(monthEntries), [monthEntries, technicians]);
+
+  const techBreakdown = useMemo(() => {
+    return technicians.filter(t => t.active).map(tech => {
+      const tEntries = monthEntries.filter(e => e.technicianId === tech.id);
+      const metrics = calculateMetrics(tEntries);
+      return {
+        technician: tech,
+        ...metrics
+      };
+    }).sort((a, b) => b.productivity - a.productivity);
+  }, [monthEntries, technicians]);
+
+  useEffect(() => {
+    if (!chartRef.current || typeof Chart === 'undefined') return;
+    const ctx = chartRef.current.getContext('2d');
+
+    const labels = techBreakdown.map(item => item.technician.name);
+    const prodData = techBreakdown.map(item => Number(item.productivity.toFixed(1)));
+    const effData = techBreakdown.map(item => Number(item.efficiency.toFixed(1)));
+
+    const chartInstance = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: 'Produttività %',
+            data: prodData,
+            backgroundColor: 'rgba(245, 158, 11, 0.7)',
+            borderColor: '#f59e0b',
+            borderWidth: 1,
+            borderRadius: 6
+          },
+          {
+            label: 'Efficienza %',
+            data: effData,
+            backgroundColor: 'rgba(16, 185, 129, 0.7)',
+            borderColor: '#10b981',
+            borderWidth: 1,
+            borderRadius: 6
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { labels: { color: '#9ca3af' } }
+        },
+        scales: {
+          x: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+          y: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(255,255,255,0.05)' }, max: 120 }
+        }
+      }
+    });
+
+    return () => chartInstance.destroy();
+  }, [techBreakdown]);
+
+  return (
+    <div className="space-y-8">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3">
+            <span>Riepilogo Mensile Officina</span>
+            <span className="text-xs px-2.5 py-1 bg-amber-500/20 text-amber-300 rounded-full border border-amber-500/30">
+              {MONTH_NAMES[selectedMonth]} {selectedYear}
+            </span>
+          </h1>
+          <p className="text-sm text-gray-400 mt-1">Analisi comparativa e classifica delle prestazioni mensili.</p>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <select
+            value={selectedMonth}
+            onChange={(e) => setSelectedMonth(Number(e.target.value))}
+            className="workshop-select"
+          >
+            {MONTH_NAMES.map((name, idx) => (
+              <option key={idx} value={idx}>{name}</option>
+            ))}
+          </select>
+
+          <select
+            value={selectedYear}
+            onChange={(e) => setSelectedYear(Number(e.target.value))}
+            className="workshop-select"
+          >
+            {[2025, 2026, 2027].map(y => (
+              <option key={y} value={y}>{y}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {monthTopPerformer && (
+        <div className="glass-panel trophy-card-gold p-6 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-6">
+          <div className="flex items-center gap-5">
+            <div className="w-16 h-16 rounded-2xl bg-amber-500 flex items-center justify-center text-3xl trophy-badge">
+              🏆
+            </div>
+            <div>
+              <span className="text-xs font-bold uppercase text-amber-400">Top Performer di {MONTH_NAMES[selectedMonth]}</span>
+              <h2 className="text-2xl font-black text-white">{monthTopPerformer.name}</h2>
+              <p className="text-sm text-gray-300">{monthTopPerformer.role}</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-6 font-mono-num text-sm bg-gray-900/60 px-5 py-3 rounded-xl border border-amber-500/20">
+            <div>
+              <span className="text-xs text-gray-400 block uppercase">Produttività</span>
+              <span className="text-lg font-bold text-amber-400">{monthTopPerformer.metrics.productivity.toFixed(1)}%</span>
+            </div>
+            <div className="h-8 w-px bg-gray-800"></div>
+            <div>
+              <span className="text-xs text-gray-400 block uppercase">Efficienza</span>
+              <span className="text-lg font-bold text-emerald-400">{monthTopPerformer.metrics.efficiency.toFixed(1)}%</span>
+            </div>
+            <button onClick={triggerConfetti} className="btn-gold text-xs">🎉 Festeggia</button>
+          </div>
+        </div>
+      )}
+
+      <div className="glass-panel rounded-2xl p-6">
+        <h3 className="text-lg font-bold text-white mb-4">Confronto Produttività ed Efficienza Tecnici</h3>
+        <div className="h-72 w-full">
+          <canvas ref={chartRef}></canvas>
+        </div>
+      </div>
+
+      <div className="glass-panel rounded-2xl p-6">
+        <h3 className="text-lg font-bold text-white mb-4">Dettaglio Mensile Tecnici</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-gray-800 text-gray-400 text-xs uppercase font-bold">
+                <th className="py-3 px-4">Posizione</th>
+                <th className="py-3 px-4">Tecnico</th>
+                <th className="py-3 px-4 text-center">Presenza</th>
+                <th className="py-3 px-4 text-center">Lavorate</th>
+                <th className="py-3 px-4 text-center">Fatturate</th>
+                <th className="py-3 px-4 text-center">Produttività %</th>
+                <th className="py-3 px-4 text-center">Efficienza %</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/50 text-sm">
+              {techBreakdown.map((item, idx) => {
+                const isTop = idx === 0 && item.presence > 0;
+                return (
+                  <tr key={item.technician.id} className={isTop ? 'bg-amber-500/5 font-semibold' : ''}>
+                    <td className="py-3 px-4 text-center font-bold text-amber-400">
+                      {idx === 0 ? '🥇 1°' : idx === 1 ? '🥈 2°' : idx === 2 ? '🥉 3°' : `${idx + 1}°`}
+                    </td>
+                    <td className="py-3 px-4 font-bold text-white flex items-center space-x-2">
+                      <span>{item.technician.name}</span>
+                      {isTop && <span title="Dipendente più produttivo del mese">🏆</span>}
+                    </td>
+                    <td className="py-3 px-4 text-center font-mono-num">{item.presence} h</td>
+                    <td className="py-3 px-4 text-center font-mono-num">{item.worked} h</td>
+                    <td className="py-3 px-4 text-center font-mono-num text-emerald-400">{item.billed} h</td>
+                    <td className="py-3 px-4 text-center font-mono-num">
+                      <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                        item.productivity >= 85 ? 'badge-green' : 'badge-amber'
+                      }`}>
+                        {item.productivity.toFixed(1)}%
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-center font-mono-num">
+                      <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+                        item.efficiency >= 100 ? 'badge-green' : 'badge-amber'
+                      }`}>
+                        {item.efficiency.toFixed(1)}%
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------
+// 4. YEARLY VIEW
+// ----------------------------------------------------
+function YearlyView({
+  entries,
+  technicians,
+  selectedYear,
+  setSelectedYear,
+  calculateMetrics,
+  getTopPerformer
+}) {
+  const chartRef = useRef(null);
+
+  const yearEntries = useMemo(() => {
+    return entries.filter(e => e.year === selectedYear);
+  }, [entries, selectedYear]);
+
+  const yearTopPerformer = useMemo(() => getTopPerformer(yearEntries), [yearEntries, technicians]);
+
+  const monthlyTrend = useMemo(() => {
+    return MONTH_NAMES.map((name, monthIdx) => {
+      const mEntries = yearEntries.filter(e => e.month === monthIdx);
+      const metrics = calculateMetrics(mEntries);
+      return {
+        monthName: name,
+        ...metrics
+      };
+    });
+  }, [yearEntries]);
+
+  useEffect(() => {
+    if (!chartRef.current || typeof Chart === 'undefined') return;
+    const ctx = chartRef.current.getContext('2d');
+
+    const labels = monthlyTrend.map(m => m.monthName.substring(0, 3));
+    const billedData = monthlyTrend.map(m => m.billed);
+    const workedData = monthlyTrend.map(m => m.worked);
+    const presenceData = monthlyTrend.map(m => m.presence);
+
+    const chartInstance = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [
+          {
+            label: 'Ore Fatturate',
+            data: billedData,
+            borderColor: '#10b981',
+            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+            tension: 0.3,
+            fill: true
+          },
+          {
+            label: 'Ore Lavorate',
+            data: workedData,
+            borderColor: '#f59e0b',
+            borderDash: [5, 5],
+            tension: 0.3
+          },
+          {
+            label: 'Ore Presenza',
+            data: presenceData,
+            borderColor: '#06b6d4',
+            borderDash: [2, 2],
+            tension: 0.3
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { labels: { color: '#9ca3af' } }
+        },
+        scales: {
+          x: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(255,255,255,0.05)' } },
+          y: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(255,255,255,0.05)' } }
+        }
+      }
+    });
+
+    return () => chartInstance.destroy();
+  }, [monthlyTrend]);
+
+  return (
+    <div className="space-y-8">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3">
+            <span>Riepilogo Annuale Officina</span>
+            <span className="text-xs px-2.5 py-1 bg-amber-500/20 text-amber-300 rounded-full border border-amber-500/30 font-mono">
+              Anno {selectedYear}
+            </span>
+          </h1>
+          <p className="text-sm text-gray-400 mt-1">Andamento annuale delle ore e produttività complessiva.</p>
+        </div>
+
+        <select
+          value={selectedYear}
+          onChange={(e) => setSelectedYear(Number(e.target.value))}
+          className="workshop-select"
+        >
+          {[2025, 2026, 2027].map(y => (
+            <option key={y} value={y}>Anno {y}</option>
+          ))}
+        </select>
+      </div>
+
+      {yearTopPerformer && (
+        <div className="glass-panel trophy-card-gold p-6 rounded-2xl flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <span className="text-4xl">🏆</span>
+            <div>
+              <span className="text-xs font-bold uppercase text-amber-400">Tecnico dell'Anno {selectedYear}</span>
+              <h2 className="text-2xl font-black text-white">{yearTopPerformer.name}</h2>
+            </div>
+          </div>
+          <div className="font-mono-num text-right">
+            <span className="text-xs text-gray-400 block">Produttività Media Annuale</span>
+            <span className="text-2xl font-extrabold text-amber-400">{yearTopPerformer.metrics.productivity.toFixed(1)}%</span>
+          </div>
+        </div>
+      )}
+
+      <div className="glass-panel rounded-2xl p-6">
+        <h3 className="text-lg font-bold text-white mb-4">Trend Mensile Ore ({selectedYear})</h3>
+        <div className="h-80 w-full">
+          <canvas ref={chartRef}></canvas>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------
+// 5. TECHNICIANS VIEW
+// ----------------------------------------------------
+function TechniciansView({ technicians, setTechnicians, entries }) {
+  const [name, setName] = useState('');
+  const [role, setRole] = useState('Meccanico Senior');
+  const [avatarColor, setAvatarColor] = useState('#f59e0b');
+
+  const handleAddTechnician = (e) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+
+    const newTech = {
+      id: `tech-${Date.now()}`,
+      name: name.trim(),
+      role: role.trim(),
+      avatarColor,
+      active: true,
+      targetHours: 40
+    };
+
+    setTechnicians(prev => [...prev, newTech]);
+    setName('');
+  };
+
+  const handleToggleActive = (id) => {
+    setTechnicians(prev => prev.map(t => t.id === id ? { ...t, active: !t.active } : t));
+  };
+
+  const handleDeleteTechnician = (id) => {
+    if (confirm('Eliminare questo tecnico dall\'elenco attivo?')) {
+      setTechnicians(prev => prev.filter(t => t.id !== id));
+    }
+  };
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h1 className="text-3xl font-extrabold text-white tracking-tight">Gestione Tecnici ed Anagrafica</h1>
+        <p className="text-sm text-gray-400 mt-1">Aggiungi, modifica o disattiva i tecnici della squadra dell'officina.</p>
+      </div>
+
+      <div className="glass-panel p-6 rounded-2xl">
+        <h3 className="text-lg font-bold text-white mb-4">➕ Inserisci Nuovo Tecnico</h3>
+        <form onSubmit={handleAddTechnician} className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
+          <div className="md:col-span-2">
+            <label className="block text-xs text-gray-400 mb-1 font-semibold">Nome e Cognome</label>
+            <input
+              type="text"
+              required
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Es. Mario Rossi"
+              className="workshop-input"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1 font-semibold">Qualifica / Ruolo</label>
+            <select value={role} onChange={(e) => setRole(e.target.value)} className="workshop-select w-full">
+              <option value="Capo Officina">Capo Officina</option>
+              <option value="Meccanico Senior">Meccanico Senior</option>
+              <option value="Meccanico Junior">Meccanico Junior</option>
+              <option value="Elettrauto">Elettrauto</option>
+              <option value="Tecnico Diagnostica">Tecnico Diagnostica</option>
+              <option value="Carrozziere">Carrozziere</option>
+              <option value="Accettatore">Accettatore</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs text-gray-400 mb-1 font-semibold">Colore Avatar</label>
+            <input
+              type="color"
+              value={avatarColor}
+              onChange={(e) => setAvatarColor(e.target.value)}
+              className="w-full h-10 rounded cursor-pointer bg-transparent border-0"
+            />
+          </div>
+
+          <div>
+            <button type="submit" className="btn-gold w-full justify-center">
+              Aggiungi Tecnico
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div className="glass-panel p-6 rounded-2xl">
+        <h3 className="text-lg font-bold text-white mb-4">Squadra Tecnici Registrata</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {technicians.map(tech => (
+            <div key={tech.id} className="p-4 rounded-xl border border-gray-800 bg-gray-900/40 flex justify-between items-center">
+              <div className="flex items-center space-x-3">
+                <div
+                  className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-black text-sm shadow"
+                  style={{ backgroundColor: tech.avatarColor }}
+                >
+                  {tech.name.split(' ').map(n => n[0]).join('')}
+                </div>
+                <div>
+                  <h4 className="font-bold text-white text-base">{tech.name}</h4>
+                  <p className="text-xs text-gray-400">{tech.role}</p>
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => handleToggleActive(tech.id)}
+                  className={`text-xs px-2.5 py-1 rounded font-bold ${
+                    tech.active ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-gray-700 text-gray-400'
+                  }`}
+                >
+                  {tech.active ? 'Attivo' : 'Disattivato'}
+                </button>
+                <button
+                  onClick={() => handleDeleteTechnician(tech.id)}
+                  className="text-xs p-1 text-gray-500 hover:text-red-400"
+                  title="Elimina"
+                >
+                  🗑️
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------
+// 6. EXPORT VIEW
+// ----------------------------------------------------
+function ExportView({ entries, setEntries, technicians, setTechnicians, calculateMetrics }) {
+  const exportToExcel = () => {
+    if (typeof XLSX === 'undefined') {
+      alert("Libreria XLSX in caricamento...");
+      return;
+    }
+
+    const dataRows = entries.map(e => {
+      const tech = technicians.find(t => t.id === e.technicianId);
+      const pres = Number(e.hoursPresence) || 0;
+      const worked = Number(e.hoursWorked) || 0;
+      const billed = Number(e.hoursBilled) || 0;
+      const toBeBilled = Number(e.hoursToBeBilled) || 0;
+      const prod = pres > 0 ? (worked / pres) * 100 : 0;
+      const eff = worked > 0 ? (billed / worked) * 100 : 0;
+
+      return {
+        "Anno": e.year,
+        "Settimana": e.weekNumber,
+        "Mese": MONTH_NAMES[e.month] || e.month,
+        "Tecnico": tech ? tech.name : 'N/D',
+        "Qualifica": tech ? tech.role : 'N/D',
+        "Ore Presenza": pres,
+        "Ore Lavorate": worked,
+        "Ore Fatturate": billed,
+        "Ore da Fatturare": toBeBilled,
+        "Produttività (%)": Number(prod.toFixed(1)),
+        "Efficienza (%)": Number(eff.toFixed(1)),
+        "Note": e.notes || ''
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(dataRows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Rendimento Officina");
+    XLSX.writeFile(workbook, `Fast_Prod_Rendimento_${new Date().toISOString().split('T')[0]}.xlsx`);
+  };
+
+  const exportToCSV = () => {
+    const headers = ["Anno", "Settimana", "Mese", "Tecnico", "Presenza", "Lavorate", "Fatturate", "Da Fatturare", "Produttività", "Efficienza"];
+    const rows = entries.map(e => {
+      const tech = technicians.find(t => t.id === e.technicianId);
+      const pres = Number(e.hoursPresence) || 0;
+      const worked = Number(e.hoursWorked) || 0;
+      const billed = Number(e.hoursBilled) || 0;
+      const toBeBilled = Number(e.hoursToBeBilled) || 0;
+      const prod = pres > 0 ? (worked / pres) * 100 : 0;
+      const eff = worked > 0 ? (billed / worked) * 100 : 0;
+
+      return [
+        e.year,
+        e.weekNumber,
+        MONTH_NAMES[e.month] || e.month,
+        `"${tech ? tech.name : 'N/D'}"`,
+        pres,
+        worked,
+        billed,
+        toBeBilled,
+        prod.toFixed(1),
+        eff.toFixed(1)
+      ].join(",");
+    });
+
+    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows].join("\n");
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Fast_Prod_Report_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <h1 className="text-3xl font-extrabold text-white tracking-tight">Esportazione & Stampa Report</h1>
+        <p className="text-sm text-gray-400 mt-1">Scarica i dati dell'officina in Excel, CSV o stampa il report cartaceo/PDF.</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between">
+          <div>
+            <div className="text-3xl mb-3">📊</div>
+            <h3 className="text-lg font-bold text-white">Esporta in Excel (.xlsx)</h3>
+            <p className="text-xs text-gray-400 mt-1">Genera un foglio di calcolo formattato con tutti i dati delle ore e delle percentuali.</p>
+          </div>
+          <button onClick={exportToExcel} className="btn-gold mt-6 justify-center">
+            Scarica Excel (.xlsx)
+          </button>
+        </div>
+
+        <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between">
+          <div>
+            <div className="text-3xl mb-3">📁</div>
+            <h3 className="text-lg font-bold text-white">Esporta in CSV</h3>
+            <p className="text-xs text-gray-400 mt-1">Esporta in formato standard compatibile con qualsiasi software aziendale o gestionale.</p>
+          </div>
+          <button onClick={exportToCSV} className="btn-dark mt-6 justify-center">
+            Scarica File CSV
+          </button>
+        </div>
+
+        <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between">
+          <div>
+            <div className="text-3xl mb-3">🖨️</div>
+            <h3 className="text-lg font-bold text-white">Stampa Report / PDF</h3>
+            <p className="text-xs text-gray-400 mt-1">Apri il modulo di stampa per salvare un report PDF pulito ed elegante pronto per la firma.</p>
+          </div>
+          <button onClick={() => window.print()} className="btn-gold mt-6 justify-center">
+            Stampa / Salva PDF
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Render React App to DOM
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);

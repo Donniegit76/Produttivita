@@ -1,0 +1,19 @@
+{
+  "name": "fast_prod",
+  "version": "1.0.0",
+  "description": "Webapp per calcolare la produttività ed efficienza dei dipendenti dell'officina con Docker, export e badge top performer",
+  "main": "index.html",
+  "scripts": {
+    "start": "docker compose up -d"
+  },
+  "keywords": [
+    "officina",
+    "produttivita",
+    "efficienza",
+    "tecnici",
+    "meccanici",
+    "docker"
+  ],
+  "author": "Fast_Prod Team",
+  "license": "MIT"
+}
