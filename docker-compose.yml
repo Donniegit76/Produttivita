@@ -7,13 +7,10 @@ services:
       dockerfile: Dockerfile
     container_name: fast_prod_app
     ports:
-      - "8085:80"   # Porta 8085 libera per l'ascolto locale da parte di Nginx Proxy Manager
+      - "8085:8080"   # Porta 8085 (server) per Nginx Proxy Manager o accesso diretto
+    volumes:
+      - ./data:/app/data   # VOLUME PERSISTENTE PER IL DATABASE (Non si perde mai nulla!)
     restart: always
     environment:
       - NODE_ENV=production
-
-# Opzionale: Se Nginx Proxy Manager e Fast_Prod sono sulla stessa rete Docker
-# networks:
-#   default:
-#     external:
-#       name: npm_network
+      - PORT=8080

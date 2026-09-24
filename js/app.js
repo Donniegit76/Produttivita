@@ -1,4 +1,4 @@
-/* Fast_Prod - Main Application Script */
+/* Fast_Prod - Main Application Script with REST API Central Database Synchronization */
 const { useState, useEffect, useMemo, useRef } = React;
 
 // Utility Helpers
@@ -15,7 +15,7 @@ const MONTH_NAMES = [
   "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"
 ];
 
-// Initial Seed Data
+// Initial Local Seed Data (as fallback)
 const INITIAL_TECHNICIANS = [
   { id: 'tech-1', name: 'Marco Rossi', role: 'Capo Officina', avatarColor: '#f59e0b', active: true, targetHours: 40 },
   { id: 'tech-2', name: 'Luca Bianchi', role: 'Meccanico Senior', avatarColor: '#10b981', active: true, targetHours: 40 },
@@ -30,22 +30,18 @@ const generateSeedEntries = () => {
   const currentYear = currentDate.getFullYear();
   const currentMonth = currentDate.getMonth();
   
-  // Seed past 3 months of data
   INITIAL_TECHNICIANS.forEach((tech, techIdx) => {
     for (let m = currentMonth - 2; m <= currentMonth; m++) {
       const targetM = (m + 12) % 12;
       const targetY = m < 0 ? currentYear - 1 : currentYear;
       
-      // Seed 4 weeks per month
       for (let w = 1; w <= 4; w++) {
         const weekNum = (targetM * 4) + w;
-        
         let pres = 38 + (techIdx % 3);
         let worked = Math.round(pres * (0.80 + (techIdx * 0.04)));
         let billed = Math.round(worked * (0.90 + (techIdx * 0.05)));
         let toBeBilled = Math.round(worked * 0.08);
 
-        // Tech 1 is top performer
         if (techIdx === 0) {
           worked = 37;
           billed = 42;
@@ -62,7 +58,7 @@ const generateSeedEntries = () => {
           hoursWorked: worked,
           hoursBilled: billed,
           hoursToBeBilled: toBeBilled,
-          notes: 'Tagliandi e interventi programmato'
+          notes: 'Manutenzione ordinarie e tagliandi'
         });
       }
     }
@@ -90,7 +86,9 @@ function App() {
     }
   });
 
-  const [currentTab, setCurrentTab] = useState('dashboard'); // dashboard, weekly, monthly, yearly, technicians, export
+  const [isServerConnected, setIsServerConnected] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('syncing'); // syncing, synced, offline
+  const [currentTab, setCurrentTab] = useState('dashboard');
   
   const now = new Date();
   const currentWeekInfo = getWeekNumber(now);
@@ -98,18 +96,109 @@ function App() {
   const [selectedYear, setSelectedYear] = useState(now.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(now.getMonth());
 
-  // Save state to localStorage safely
+  // Fetch Central Database on Load
   useEffect(() => {
-    try {
-      localStorage.setItem('fast_prod_technicians', JSON.stringify(technicians));
-    } catch (e) {}
-  }, [technicians]);
+    const fetchServerData = async () => {
+      try {
+        setSyncStatus('syncing');
+        const statusRes = await fetch('/api/status');
+        if (statusRes.ok) {
+          setIsServerConnected(true);
 
-  useEffect(() => {
+          const [techsRes, entriesRes] = await Promise.all([
+            fetch('/api/technicians'),
+            fetch('/api/entries')
+          ]);
+
+          if (techsRes.ok && entriesRes.ok) {
+            const serverTechs = await techsRes.json();
+            const serverEntries = await entriesRes.json();
+
+            setTechnicians(serverTechs);
+            setEntries(serverEntries);
+
+            // Update local cache
+            localStorage.setItem('fast_prod_technicians', JSON.stringify(serverTechs));
+            localStorage.setItem('fast_prod_entries', JSON.stringify(serverEntries));
+            setSyncStatus('synced');
+            return;
+          }
+        }
+      } catch (e) {
+        console.log('Central server not reachable, running in offline mode:', e);
+        setIsServerConnected(false);
+        setSyncStatus('offline');
+      }
+    };
+
+    fetchServerData();
+  }, []);
+
+  // Sync state changes to Central Database Server
+  const saveTechnicianToServer = async (techData) => {
     try {
-      localStorage.setItem('fast_prod_entries', JSON.stringify(entries));
-    } catch (e) {}
-  }, [entries]);
+      if (isServerConnected) {
+        setSyncStatus('syncing');
+        await fetch('/api/technicians', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(techData)
+        });
+        setSyncStatus('synced');
+      }
+    } catch (e) {
+      console.error('Failed to sync technician to server database:', e);
+    }
+  };
+
+  const deleteTechnicianFromServer = async (techId) => {
+    try {
+      if (isServerConnected) {
+        setSyncStatus('syncing');
+        await fetch(`/api/technicians/${techId}`, { method: 'DELETE' });
+        setSyncStatus('synced');
+      }
+    } catch (e) {
+      console.error('Failed to delete technician from server database:', e);
+    }
+  };
+
+  const saveEntryToServer = async (entryData) => {
+    try {
+      if (isServerConnected) {
+        setSyncStatus('syncing');
+        await fetch('/api/entries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(entryData)
+        });
+        setSyncStatus('synced');
+      }
+    } catch (e) {
+      console.error('Failed to sync entry to server database:', e);
+    }
+  };
+
+  // Local state update wrappers that trigger server sync
+  const updateTechniciansState = (updater) => {
+    setTechnicians(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      try {
+        localStorage.setItem('fast_prod_technicians', JSON.stringify(next));
+      } catch (e) {}
+      return next;
+    });
+  };
+
+  const updateEntriesState = (updater) => {
+    setEntries(prev => {
+      const next = typeof updater === 'function' ? updater(prev) : updater;
+      try {
+        localStorage.setItem('fast_prod_entries', JSON.stringify(next));
+      } catch (e) {}
+      return next;
+    });
+  };
 
   // Compute KPI metrics helper
   const calculateMetrics = (entryList) => {
@@ -142,12 +231,7 @@ function App() {
     const techStats = {};
     filteredEntries.forEach(entry => {
       if (!techStats[entry.technicianId]) {
-        techStats[entry.technicianId] = {
-          presence: 0,
-          worked: 0,
-          billed: 0,
-          toBeBilled: 0
-        };
+        techStats[entry.technicianId] = { presence: 0, worked: 0, billed: 0, toBeBilled: 0 };
       }
       techStats[entry.technicianId].presence += Number(entry.hoursPresence) || 0;
       techStats[entry.technicianId].worked += Number(entry.hoursWorked) || 0;
@@ -169,11 +253,7 @@ function App() {
         if (score > maxScore) {
           maxScore = score;
           bestTechId = techId;
-          bestMetrics = {
-            productivity: prod,
-            efficiency: eff,
-            score
-          };
+          bestMetrics = { productivity: prod, efficiency: eff, score };
         }
       }
     });
@@ -186,23 +266,19 @@ function App() {
 
   const triggerConfetti = () => {
     if (window.confetti) {
-      window.confetti({
-        particleCount: 100,
-        spread: 70,
-        origin: { y: 0.6 }
-      });
+      window.confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
     }
   };
 
   return (
     <div className="flex flex-col min-h-screen">
-      {/* Navigation Bar */}
+      {/* Top Navigation Bar */}
       <header className="no-print bg-[#111722]/90 backdrop-blur-md border-b border-gray-800 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
           
           {/* Logo */}
           <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setCurrentTab('dashboard')}>
-            <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-amber-500 to-yellow-300 flex items-center justify-center text-slate-950 font-black shadow-lg shadow-amber-500/20">
+            <div className="w-11 h-11 rounded-xl bg-gradient-to-tr from-amber-500 to-yellow-300 flex items-center justify-center text-slate-950 font-black shadow-lg shadow-amber-500/20 text-xl">
               ⚡
             </div>
             <div>
@@ -214,11 +290,25 @@ function App() {
                   Officina
                 </span>
               </div>
-              <p className="text-xs text-gray-400 font-medium">Gestione Produttività ed Efficienza Tecnici</p>
+              
+              {/* Server Database Connection Indicator */}
+              <div className="flex items-center gap-2 mt-0.5">
+                {isServerConnected ? (
+                  <span className="text-[10px] text-emerald-400 flex items-center gap-1 font-semibold">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    Database Server Persistente Connesso
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-amber-400 flex items-center gap-1 font-semibold">
+                    <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                    Modalità Locale / Off-line
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
-          {/* Desktop Nav */}
+          {/* Navigation Links */}
           <nav className="hidden md:flex items-center space-x-1 bg-gray-900/60 p-1.5 rounded-xl border border-gray-800">
             <button
               onClick={() => setCurrentTab('dashboard')}
@@ -321,7 +411,8 @@ function App() {
         {currentTab === 'weekly' && (
           <WeeklyView
             entries={entries}
-            setEntries={setEntries}
+            setEntries={updateEntriesState}
+            saveEntryToServer={saveEntryToServer}
             technicians={technicians}
             selectedWeek={selectedWeek}
             setSelectedWeek={setSelectedWeek}
@@ -361,7 +452,9 @@ function App() {
         {currentTab === 'technicians' && (
           <TechniciansView
             technicians={technicians}
-            setTechnicians={setTechnicians}
+            setTechnicians={updateTechniciansState}
+            saveTechnicianToServer={saveTechnicianToServer}
+            deleteTechnicianFromServer={deleteTechnicianFromServer}
             entries={entries}
           />
         )}
@@ -369,110 +462,18 @@ function App() {
         {currentTab === 'export' && (
           <ExportView
             entries={entries}
-            setEntries={setEntries}
+            setEntries={updateEntriesState}
             technicians={technicians}
-            setTechnicians={setTechnicians}
+            setTechnicians={updateTechniciansState}
             calculateMetrics={calculateMetrics}
+            isServerConnected={isServerConnected}
           />
         )}
       </main>
 
-      {/* Print template */}
-      <div className="print-only p-8 bg-white text-black">
-        <div className="border-b-2 border-gray-900 pb-4 mb-6 flex justify-between items-center">
-          <div>
-            <h1 className="text-3xl font-bold uppercase tracking-wider">Fast_Prod - Report Officina</h1>
-            <p className="text-sm text-gray-600">Riepilogo Ore, Produttività ed Efficienza Tecnici</p>
-          </div>
-          <div className="text-right text-sm">
-            <p>Data Stampa: {new Date().toLocaleDateString('it-IT')}</p>
-            <p className="font-semibold">Officina Meccanica</p>
-          </div>
-        </div>
-
-        <div className="mb-6">
-          <h2 className="text-xl font-bold mb-2">Totali Generali Officina</h2>
-          {(() => {
-            const totals = calculateMetrics(entries);
-            return (
-              <table className="w-full border-collapse border border-gray-400 text-sm">
-                <thead>
-                  <tr className="bg-gray-100">
-                    <th className="border p-2">Ore Presenza</th>
-                    <th className="border p-2">Ore Lavorate</th>
-                    <th className="border p-2">Ore Fatturate</th>
-                    <th className="border p-2">Ore da Fatturare</th>
-                    <th className="border p-2">Produttività %</th>
-                    <th className="border p-2">Efficienza %</th>
-                    <th className="border p-2">Rendimento Globale %</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr className="text-center font-bold">
-                    <td className="border p-2">{totals.presence}h</td>
-                    <td className="border p-2">{totals.worked}h</td>
-                    <td className="border p-2">{totals.billed}h</td>
-                    <td className="border p-2">{totals.toBeBilled}h</td>
-                    <td className="border p-2">{totals.productivity.toFixed(1)}%</td>
-                    <td className="border p-2">{totals.efficiency.toFixed(1)}%</td>
-                    <td className="border p-2">{totals.globalRendimento.toFixed(1)}%</td>
-                  </tr>
-                </tbody>
-              </table>
-            );
-          })()}
-        </div>
-
-        <div>
-          <h2 className="text-xl font-bold mb-2">Dettaglio Tecnici</h2>
-          <table className="w-full border-collapse border border-gray-400 text-sm">
-            <thead>
-              <tr className="bg-gray-100">
-                <th className="border p-2">Tecnico</th>
-                <th className="border p-2">Qualifica</th>
-                <th className="border p-2">Presenza</th>
-                <th className="border p-2">Lavorate</th>
-                <th className="border p-2">Fatturate</th>
-                <th className="border p-2">Da Fatturare</th>
-                <th className="border p-2">Produttività</th>
-                <th className="border p-2">Efficienza</th>
-              </tr>
-            </thead>
-            <tbody>
-              {technicians.filter(t => t.active).map(tech => {
-                const techEntries = entries.filter(e => e.technicianId === tech.id);
-                const stats = calculateMetrics(techEntries);
-                const topPerformer = getTopPerformer(entries);
-                const isTop = topPerformer && topPerformer.id === tech.id;
-                return (
-                  <tr key={tech.id} className="text-center">
-                    <td className="border p-2 font-semibold text-left">
-                      {isTop ? '🏆 ' : ''}{tech.name}
-                    </td>
-                    <td className="border p-2">{tech.role}</td>
-                    <td className="border p-2">{stats.presence}h</td>
-                    <td className="border p-2">{stats.worked}h</td>
-                    <td className="border p-2">{stats.billed}h</td>
-                    <td className="border p-2">{stats.toBeBilled}h</td>
-                    <td className="border p-2 font-bold">{stats.productivity.toFixed(1)}%</td>
-                    <td className="border p-2 font-bold">{stats.efficiency.toFixed(1)}%</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="mt-12 pt-6 border-t border-gray-300 flex justify-between text-sm text-gray-600">
-          <div>Firma Capo Officina: ___________________________</div>
-          <div>Firma Responsabile: ___________________________</div>
-        </div>
-      </div>
-
       {/* Footer */}
       <footer className="no-print border-t border-gray-800/60 py-6 mt-12 bg-gray-950/40 text-center text-xs text-gray-500">
-        <p>Fast_Prod - Sistema Gestione Produttività ed Efficienza Officina</p>
-        <p className="mt-1 text-gray-600">Formula Produttività: (Lavorate / Presenza) × 100 | Formula Efficienza: (Fatturate / Lavorate) × 100</p>
+        <p>Fast_Prod - Sistema Gestione Produttività ed Efficienza Officina con Database Persistente</p>
       </footer>
     </div>
   );
@@ -487,8 +488,6 @@ function DashboardView({ entries, technicians, calculateMetrics, getTopPerformer
 
   return (
     <div className="space-y-8">
-      
-      {/* Header Title */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3">
@@ -507,7 +506,6 @@ function DashboardView({ entries, technicians, calculateMetrics, getTopPerformer
         </div>
       </div>
 
-      {/* Top Performer Banner Card 🏆 */}
       {topPerformer && (
         <div className="glass-panel trophy-card-gold p-6 rounded-2xl relative overflow-hidden flex flex-col md:flex-row items-center justify-between gap-6">
           <div className="flex items-center gap-5">
@@ -525,11 +523,7 @@ function DashboardView({ entries, technicians, calculateMetrics, getTopPerformer
                 <span className="text-xs font-extrabold uppercase tracking-widest text-amber-400">
                   Dipendente Più Produttivo del Periodo
                 </span>
-                <button
-                  onClick={triggerConfetti}
-                  className="text-xs bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 px-2 py-0.5 rounded-full border border-amber-500/30 transition-all"
-                  title="Festeggia con coriandoli!"
-                >
+                <button onClick={triggerConfetti} className="text-xs bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 px-2 py-0.5 rounded-full border border-amber-500/30 transition-all">
                   🎉 Festeggia!
                 </button>
               </div>
@@ -541,29 +535,22 @@ function DashboardView({ entries, technicians, calculateMetrics, getTopPerformer
           <div className="flex items-center gap-6 bg-slate-900/60 p-4 rounded-xl border border-amber-500/20">
             <div className="text-center px-3">
               <p className="text-xs text-gray-400 uppercase font-semibold">Produttività</p>
-              <p className="text-xl font-extrabold text-amber-400 font-mono-num">
-                {topPerformer.metrics.productivity.toFixed(1)}%
-              </p>
+              <p className="text-xl font-extrabold text-amber-400 font-mono-num">{topPerformer.metrics.productivity.toFixed(1)}%</p>
             </div>
             <div className="h-8 w-px bg-gray-800"></div>
             <div className="text-center px-3">
               <p className="text-xs text-gray-400 uppercase font-semibold">Efficienza</p>
-              <p className="text-xl font-extrabold text-emerald-400 font-mono-num">
-                {topPerformer.metrics.efficiency.toFixed(1)}%
-              </p>
+              <p className="text-xl font-extrabold text-emerald-400 font-mono-num">{topPerformer.metrics.efficiency.toFixed(1)}%</p>
             </div>
             <div className="h-8 w-px bg-gray-800"></div>
             <div className="text-center px-3">
               <p className="text-xs text-gray-400 uppercase font-semibold">Indice Globale</p>
-              <p className="text-xl font-extrabold text-cyan-400 font-mono-num">
-                {topPerformer.metrics.score.toFixed(1)}
-              </p>
+              <p className="text-xl font-extrabold text-cyan-400 font-mono-num">{topPerformer.metrics.score.toFixed(1)}</p>
             </div>
           </div>
         </div>
       )}
 
-      {/* KPI Stats Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
         <div className="glass-panel p-5 rounded-2xl border-l-4 border-l-cyan-500">
           <div className="flex justify-between items-start">
@@ -571,11 +558,8 @@ function DashboardView({ entries, technicians, calculateMetrics, getTopPerformer
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Ore Presenza Totali</p>
               <h3 className="text-3xl font-extrabold text-white mt-2 font-mono-num">{globalMetrics.presence} h</h3>
             </div>
-            <div className="w-10 h-10 rounded-xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center font-bold text-lg">
-              ⏱️
-            </div>
+            <div className="w-10 h-10 rounded-xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center font-bold text-lg">⏱️</div>
           </div>
-          <p className="text-xs text-gray-400 mt-3">Totale ore timbratore squadra</p>
         </div>
 
         <div className="glass-panel p-5 rounded-2xl border-l-4 border-l-amber-500">
@@ -584,11 +568,8 @@ function DashboardView({ entries, technicians, calculateMetrics, getTopPerformer
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Ore Lavorate (Commessa)</p>
               <h3 className="text-3xl font-extrabold text-white mt-2 font-mono-num">{globalMetrics.worked} h</h3>
             </div>
-            <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center font-bold text-lg">
-              🔧
-            </div>
+            <div className="w-10 h-10 rounded-xl bg-amber-500/10 text-amber-400 flex items-center justify-center font-bold text-lg">🔧</div>
           </div>
-          <p className="text-xs text-gray-400 mt-3">Ore effettive su ordini di lavoro</p>
         </div>
 
         <div className="glass-panel p-5 rounded-2xl border-l-4 border-l-emerald-500">
@@ -597,11 +578,8 @@ function DashboardView({ entries, technicians, calculateMetrics, getTopPerformer
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Ore Fatturate</p>
               <h3 className="text-3xl font-extrabold text-white mt-2 font-mono-num">{globalMetrics.billed} h</h3>
             </div>
-            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-bold text-lg">
-              💶
-            </div>
+            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center font-bold text-lg">💶</div>
           </div>
-          <p className="text-xs text-gray-400 mt-3">Ore addebitate in fattura</p>
         </div>
 
         <div className="glass-panel p-5 rounded-2xl border-l-4 border-l-purple-500">
@@ -610,81 +588,43 @@ function DashboardView({ entries, technicians, calculateMetrics, getTopPerformer
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Ore da Fatturare</p>
               <h3 className="text-3xl font-extrabold text-white mt-2 font-mono-num">{globalMetrics.toBeBilled} h</h3>
             </div>
-            <div className="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center font-bold text-lg">
-              📋
-            </div>
+            <div className="w-10 h-10 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center font-bold text-lg">📋</div>
           </div>
-          <p className="text-xs text-gray-400 mt-3">Lavori in attesa di fatturazione</p>
         </div>
       </div>
 
-      {/* KPI Percentages */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between">
           <div className="flex justify-between items-center mb-4">
             <span className="text-sm font-bold uppercase tracking-wider text-amber-400">Produttività Media</span>
-            <span className="text-xs bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-mono">
-              (Lavorate / Presenza)
-            </span>
+            <span className="text-xs bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-mono">(Lavorate / Presenza)</span>
           </div>
           <div className="flex items-baseline space-x-2 my-2">
-            <span className="text-4xl font-extrabold text-white font-mono-num">
-              {globalMetrics.productivity.toFixed(1)}%
-            </span>
-            <span className="text-xs text-gray-400">target: 85.0%</span>
-          </div>
-          <div className="w-full bg-gray-800 h-3 rounded-full overflow-hidden mt-3">
-            <div
-              className="bg-gradient-to-r from-amber-500 to-yellow-300 h-full transition-all duration-500"
-              style={{ width: `${Math.min(100, globalMetrics.productivity)}%` }}
-            ></div>
+            <span className="text-4xl font-extrabold text-white font-mono-num">{globalMetrics.productivity.toFixed(1)}%</span>
           </div>
         </div>
 
         <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between">
           <div className="flex justify-between items-center mb-4">
             <span className="text-sm font-bold uppercase tracking-wider text-emerald-400">Efficienza Media</span>
-            <span className="text-xs bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded font-mono">
-              (Fatturate / Lavorate)
-            </span>
+            <span className="text-xs bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded font-mono">(Fatturate / Lavorate)</span>
           </div>
           <div className="flex items-baseline space-x-2 my-2">
-            <span className="text-4xl font-extrabold text-white font-mono-num">
-              {globalMetrics.efficiency.toFixed(1)}%
-            </span>
-            <span className="text-xs text-gray-400">target: 100.0%</span>
-          </div>
-          <div className="w-full bg-gray-800 h-3 rounded-full overflow-hidden mt-3">
-            <div
-              className="bg-gradient-to-r from-emerald-500 to-teal-300 h-full transition-all duration-500"
-              style={{ width: `${Math.min(100, globalMetrics.efficiency)}%` }}
-            ></div>
+            <span className="text-4xl font-extrabold text-white font-mono-num">{globalMetrics.efficiency.toFixed(1)}%</span>
           </div>
         </div>
 
         <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between">
           <div className="flex justify-between items-center mb-4">
             <span className="text-sm font-bold uppercase tracking-wider text-cyan-400">Rendimento Globale</span>
-            <span className="text-xs bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 px-2 py-0.5 rounded font-mono">
-              (Fatturate / Presenza)
-            </span>
+            <span className="text-xs bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 px-2 py-0.5 rounded font-mono">(Fatturate / Presenza)</span>
           </div>
           <div className="flex items-baseline space-x-2 my-2">
-            <span className="text-4xl font-extrabold text-white font-mono-num">
-              {globalMetrics.globalRendimento.toFixed(1)}%
-            </span>
-            <span className="text-xs text-gray-400">Efficacia totale</span>
-          </div>
-          <div className="w-full bg-gray-800 h-3 rounded-full overflow-hidden mt-3">
-            <div
-              className="bg-gradient-to-r from-cyan-500 to-blue-400 h-full transition-all duration-500"
-              style={{ width: `${Math.min(100, globalMetrics.globalRendimento)}%` }}
-            ></div>
+            <span className="text-4xl font-extrabold text-white font-mono-num">{globalMetrics.globalRendimento.toFixed(1)}%</span>
           </div>
         </div>
       </div>
 
-      {/* Technician Overview Table */}
       <div className="glass-panel rounded-2xl p-6">
         <div className="flex justify-between items-center mb-6">
           <div>
@@ -763,11 +703,12 @@ function DashboardView({ entries, technicians, calculateMetrics, getTopPerformer
 }
 
 // ----------------------------------------------------
-// 2. WEEKLY VIEW (Inserimento & Calcolo Settimanale)
+// 2. WEEKLY VIEW
 // ----------------------------------------------------
 function WeeklyView({
   entries,
   setEntries,
+  saveEntryToServer,
   technicians,
   selectedWeek,
   setSelectedWeek,
@@ -779,35 +720,26 @@ function WeeklyView({
 }) {
   const activeTechnicians = useMemo(() => technicians.filter(t => t.active), [technicians]);
 
-  // Filter entries for the selected week & year
   const weekEntries = useMemo(() => {
     return entries.filter(e => e.weekNumber === selectedWeek && e.year === selectedYear);
   }, [entries, selectedWeek, selectedYear]);
 
-  // Helper to get entry state for a technician
   const getTechWeekData = (techId) => {
     const found = weekEntries.find(e => e.technicianId === techId);
-    return found || {
-      hoursPresence: 0,
-      hoursWorked: 0,
-      hoursBilled: 0,
-      hoursToBeBilled: 0,
-      notes: ''
-    };
+    return found || { hoursPresence: 0, hoursWorked: 0, hoursBilled: 0, hoursToBeBilled: 0, notes: '' };
   };
 
-  // Handle cell input change
   const handleInputChange = (techId, field, rawValue) => {
+    let updatedRecord = null;
+
     setEntries(prev => {
       const existingIdx = prev.findIndex(e => e.technicianId === techId && e.weekNumber === selectedWeek && e.year === selectedYear);
       const val = field === 'notes' ? rawValue : (rawValue === '' ? 0 : Math.max(0, parseFloat(rawValue) || 0));
 
       if (existingIdx >= 0) {
         const updated = [...prev];
-        updated[existingIdx] = {
-          ...updated[existingIdx],
-          [field]: val
-        };
+        updated[existingIdx] = { ...updated[existingIdx], [field]: val };
+        updatedRecord = updated[existingIdx];
         return updated;
       } else {
         const newEntry = {
@@ -822,9 +754,14 @@ function WeeklyView({
           hoursToBeBilled: field === 'hoursToBeBilled' ? val : 0,
           notes: field === 'notes' ? rawValue : ''
         };
+        updatedRecord = newEntry;
         return [...prev, newEntry];
       }
     });
+
+    if (updatedRecord && typeof saveEntryToServer === 'function') {
+      saveEntryToServer(updatedRecord);
+    }
   };
 
   const weekTopPerformer = useMemo(() => getTopPerformer(weekEntries), [weekEntries, technicians]);
@@ -832,7 +769,6 @@ function WeeklyView({
 
   return (
     <div className="space-y-8">
-      {/* Header & Week Selector */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-extrabold text-white tracking-tight flex items-center gap-3">
@@ -841,48 +777,32 @@ function WeeklyView({
               Settimana {selectedWeek}
             </span>
           </h1>
-          <p className="text-sm text-gray-400 mt-1">Inserisci o modifica le ore di presenza, lavorate e fatturate dei tecnici.</p>
+          <p className="text-sm text-gray-400 mt-1">Inserisci o modifica le ore dei tecnici. I dati si sincronizzano sul database centrale.</p>
         </div>
 
-        {/* Controls */}
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => setSelectedWeek(prev => Math.max(1, prev - 1))}
-            className="btn-dark text-sm"
-          >
+          <button onClick={() => setSelectedWeek(prev => Math.max(1, prev - 1))} className="btn-dark text-sm">
             ← Settimana Prec.
           </button>
           
-          <select
-            value={selectedWeek}
-            onChange={(e) => setSelectedWeek(Number(e.target.value))}
-            className="workshop-select"
-          >
+          <select value={selectedWeek} onChange={(e) => setSelectedWeek(Number(e.target.value))} className="workshop-select">
             {Array.from({ length: 52 }, (_, i) => i + 1).map(w => (
               <option key={w} value={w}>Settimana {w}</option>
             ))}
           </select>
 
-          <select
-            value={selectedYear}
-            onChange={(e) => setSelectedYear(Number(e.target.value))}
-            className="workshop-select"
-          >
+          <select value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))} className="workshop-select">
             {[2025, 2026, 2027].map(y => (
               <option key={y} value={y}>{y}</option>
             ))}
           </select>
 
-          <button
-            onClick={() => setSelectedWeek(prev => Math.min(52, prev + 1))}
-            className="btn-dark text-sm"
-          >
+          <button onClick={() => setSelectedWeek(prev => Math.min(52, prev + 1))} className="btn-dark text-sm">
             Settimana Succ. →
           </button>
         </div>
       </div>
 
-      {/* Week Top Performer Banner 🏆 */}
       {weekTopPerformer && (
         <div className="glass-panel p-4 rounded-xl border border-amber-500/30 bg-amber-500/5 flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -906,7 +826,6 @@ function WeeklyView({
         </div>
       )}
 
-      {/* Interactive Grid */}
       <div className="glass-panel rounded-2xl p-6">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
@@ -1036,7 +955,7 @@ function WeeklyView({
                 <td className="py-3 px-4 text-center font-mono-num text-purple-400">{weekMetrics.toBeBilled} h</td>
                 <td className="py-3 px-4 text-center font-mono-num text-amber-400">{weekMetrics.productivity.toFixed(1)}%</td>
                 <td className="py-3 px-4 text-center font-mono-num text-emerald-400">{weekMetrics.efficiency.toFixed(1)}%</td>
-                <td className="py-3 px-4 text-xs text-gray-400 italic">I dati si salvano automaticamente</td>
+                <td className="py-3 px-4 text-xs text-emerald-400 italic">Sincronizzato sul Database Server</td>
               </tr>
             </tfoot>
           </table>
@@ -1049,34 +968,20 @@ function WeeklyView({
 // ----------------------------------------------------
 // 3. MONTHLY VIEW
 // ----------------------------------------------------
-function MonthlyView({
-  entries,
-  technicians,
-  selectedMonth,
-  setSelectedMonth,
-  selectedYear,
-  setSelectedYear,
-  calculateMetrics,
-  getTopPerformer,
-  triggerConfetti
-}) {
+function MonthlyView({ entries, technicians, selectedMonth, setSelectedMonth, selectedYear, setSelectedYear, calculateMetrics, getTopPerformer, triggerConfetti }) {
   const chartRef = useRef(null);
 
   const monthEntries = useMemo(() => {
     return entries.filter(e => e.month === selectedMonth && e.year === selectedYear);
   }, [entries, selectedMonth, selectedYear]);
 
-  const monthMetrics = useMemo(() => calculateMetrics(monthEntries), [monthEntries]);
   const monthTopPerformer = useMemo(() => getTopPerformer(monthEntries), [monthEntries, technicians]);
 
   const techBreakdown = useMemo(() => {
     return technicians.filter(t => t.active).map(tech => {
       const tEntries = monthEntries.filter(e => e.technicianId === tech.id);
       const metrics = calculateMetrics(tEntries);
-      return {
-        technician: tech,
-        ...metrics
-      };
+      return { technician: tech, ...metrics };
     }).sort((a, b) => b.productivity - a.productivity);
   }, [monthEntries, technicians]);
 
@@ -1093,30 +998,14 @@ function MonthlyView({
       data: {
         labels: labels,
         datasets: [
-          {
-            label: 'Produttività %',
-            data: prodData,
-            backgroundColor: 'rgba(245, 158, 11, 0.7)',
-            borderColor: '#f59e0b',
-            borderWidth: 1,
-            borderRadius: 6
-          },
-          {
-            label: 'Efficienza %',
-            data: effData,
-            backgroundColor: 'rgba(16, 185, 129, 0.7)',
-            borderColor: '#10b981',
-            borderWidth: 1,
-            borderRadius: 6
-          }
+          { label: 'Produttività %', data: prodData, backgroundColor: 'rgba(245, 158, 11, 0.7)', borderColor: '#f59e0b', borderWidth: 1, borderRadius: 6 },
+          { label: 'Efficienza %', data: effData, backgroundColor: 'rgba(16, 185, 129, 0.7)', borderColor: '#10b981', borderWidth: 1, borderRadius: 6 }
         ]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: {
-          legend: { labels: { color: '#9ca3af' } }
-        },
+        plugins: { legend: { labels: { color: '#9ca3af' } } },
         scales: {
           x: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(255,255,255,0.05)' } },
           y: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(255,255,255,0.05)' }, max: 120 }
@@ -1141,21 +1030,13 @@ function MonthlyView({
         </div>
 
         <div className="flex items-center gap-3">
-          <select
-            value={selectedMonth}
-            onChange={(e) => setSelectedMonth(Number(e.target.value))}
-            className="workshop-select"
-          >
+          <select value={selectedMonth} onChange={(e) => setSelectedMonth(Number(e.target.value))} className="workshop-select">
             {MONTH_NAMES.map((name, idx) => (
               <option key={idx} value={idx}>{name}</option>
             ))}
           </select>
 
-          <select
-            value={selectedYear}
-            onChange={(e) => setSelectedYear(Number(e.target.value))}
-            className="workshop-select"
-          >
+          <select value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))} className="workshop-select">
             {[2025, 2026, 2027].map(y => (
               <option key={y} value={y}>{y}</option>
             ))}
@@ -1256,14 +1137,7 @@ function MonthlyView({
 // ----------------------------------------------------
 // 4. YEARLY VIEW
 // ----------------------------------------------------
-function YearlyView({
-  entries,
-  technicians,
-  selectedYear,
-  setSelectedYear,
-  calculateMetrics,
-  getTopPerformer
-}) {
+function YearlyView({ entries, technicians, selectedYear, setSelectedYear, calculateMetrics, getTopPerformer }) {
   const chartRef = useRef(null);
 
   const yearEntries = useMemo(() => {
@@ -1276,10 +1150,7 @@ function YearlyView({
     return MONTH_NAMES.map((name, monthIdx) => {
       const mEntries = yearEntries.filter(e => e.month === monthIdx);
       const metrics = calculateMetrics(mEntries);
-      return {
-        monthName: name,
-        ...metrics
-      };
+      return { monthName: name, ...metrics };
     });
   }, [yearEntries]);
 
@@ -1297,36 +1168,15 @@ function YearlyView({
       data: {
         labels: labels,
         datasets: [
-          {
-            label: 'Ore Fatturate',
-            data: billedData,
-            borderColor: '#10b981',
-            backgroundColor: 'rgba(16, 185, 129, 0.1)',
-            tension: 0.3,
-            fill: true
-          },
-          {
-            label: 'Ore Lavorate',
-            data: workedData,
-            borderColor: '#f59e0b',
-            borderDash: [5, 5],
-            tension: 0.3
-          },
-          {
-            label: 'Ore Presenza',
-            data: presenceData,
-            borderColor: '#06b6d4',
-            borderDash: [2, 2],
-            tension: 0.3
-          }
+          { label: 'Ore Fatturate', data: billedData, borderColor: '#10b981', backgroundColor: 'rgba(16, 185, 129, 0.1)', tension: 0.3, fill: true },
+          { label: 'Ore Lavorate', data: workedData, borderColor: '#f59e0b', borderDash: [5, 5], tension: 0.3 },
+          { label: 'Ore Presenza', data: presenceData, borderColor: '#06b6d4', borderDash: [2, 2], tension: 0.3 }
         ]
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        plugins: {
-          legend: { labels: { color: '#9ca3af' } }
-        },
+        plugins: { legend: { labels: { color: '#9ca3af' } } },
         scales: {
           x: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(255,255,255,0.05)' } },
           y: { ticks: { color: '#9ca3af' }, grid: { color: 'rgba(255,255,255,0.05)' } }
@@ -1350,11 +1200,7 @@ function YearlyView({
           <p className="text-sm text-gray-400 mt-1">Andamento annuale delle ore e produttività complessiva.</p>
         </div>
 
-        <select
-          value={selectedYear}
-          onChange={(e) => setSelectedYear(Number(e.target.value))}
-          className="workshop-select"
-        >
+        <select value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))} className="workshop-select">
           {[2025, 2026, 2027].map(y => (
             <option key={y} value={y}>Anno {y}</option>
           ))}
@@ -1390,7 +1236,7 @@ function YearlyView({
 // ----------------------------------------------------
 // 5. TECHNICIANS VIEW
 // ----------------------------------------------------
-function TechniciansView({ technicians, setTechnicians, entries }) {
+function TechniciansView({ technicians, setTechnicians, saveTechnicianToServer, deleteTechnicianFromServer }) {
   const [name, setName] = useState('');
   const [role, setRole] = useState('Meccanico Senior');
   const [avatarColor, setAvatarColor] = useState('#f59e0b');
@@ -1409,16 +1255,33 @@ function TechniciansView({ technicians, setTechnicians, entries }) {
     };
 
     setTechnicians(prev => [...prev, newTech]);
+    if (typeof saveTechnicianToServer === 'function') {
+      saveTechnicianToServer(newTech);
+    }
     setName('');
   };
 
   const handleToggleActive = (id) => {
-    setTechnicians(prev => prev.map(t => t.id === id ? { ...t, active: !t.active } : t));
+    let updatedTech = null;
+    setTechnicians(prev => prev.map(t => {
+      if (t.id === id) {
+        updatedTech = { ...t, active: !t.active };
+        return updatedTech;
+      }
+      return t;
+    }));
+
+    if (updatedTech && typeof saveTechnicianToServer === 'function') {
+      saveTechnicianToServer(updatedTech);
+    }
   };
 
   const handleDeleteTechnician = (id) => {
-    if (confirm('Eliminare questo tecnico dall\'elenco attivo?')) {
+    if (confirm('Eliminare questo tecnico dal sistema?')) {
       setTechnicians(prev => prev.filter(t => t.id !== id));
+      if (typeof deleteTechnicianFromServer === 'function') {
+        deleteTechnicianFromServer(id);
+      }
     }
   };
 
@@ -1434,14 +1297,7 @@ function TechniciansView({ technicians, setTechnicians, entries }) {
         <form onSubmit={handleAddTechnician} className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
           <div className="md:col-span-2">
             <label className="block text-xs text-gray-400 mb-1 font-semibold">Nome e Cognome</label>
-            <input
-              type="text"
-              required
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Es. Mario Rossi"
-              className="workshop-input"
-            />
+            <input type="text" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Es. Mario Rossi" className="workshop-input" />
           </div>
 
           <div>
@@ -1459,18 +1315,11 @@ function TechniciansView({ technicians, setTechnicians, entries }) {
 
           <div>
             <label className="block text-xs text-gray-400 mb-1 font-semibold">Colore Avatar</label>
-            <input
-              type="color"
-              value={avatarColor}
-              onChange={(e) => setAvatarColor(e.target.value)}
-              className="w-full h-10 rounded cursor-pointer bg-transparent border-0"
-            />
+            <input type="color" value={avatarColor} onChange={(e) => setAvatarColor(e.target.value)} className="w-full h-10 rounded cursor-pointer bg-transparent border-0" />
           </div>
 
           <div>
-            <button type="submit" className="btn-gold w-full justify-center">
-              Aggiungi Tecnico
-            </button>
+            <button type="submit" className="btn-gold w-full justify-center">Aggiungi Tecnico</button>
           </div>
         </form>
       </div>
@@ -1481,10 +1330,7 @@ function TechniciansView({ technicians, setTechnicians, entries }) {
           {technicians.map(tech => (
             <div key={tech.id} className="p-4 rounded-xl border border-gray-800 bg-gray-900/40 flex justify-between items-center">
               <div className="flex items-center space-x-3">
-                <div
-                  className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-black text-sm shadow"
-                  style={{ backgroundColor: tech.avatarColor }}
-                >
+                <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-black text-sm shadow" style={{ backgroundColor: tech.avatarColor }}>
                   {tech.name.split(' ').map(n => n[0]).join('')}
                 </div>
                 <div>
@@ -1494,21 +1340,10 @@ function TechniciansView({ technicians, setTechnicians, entries }) {
               </div>
 
               <div className="flex items-center space-x-2">
-                <button
-                  onClick={() => handleToggleActive(tech.id)}
-                  className={`text-xs px-2.5 py-1 rounded font-bold ${
-                    tech.active ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-gray-700 text-gray-400'
-                  }`}
-                >
+                <button onClick={() => handleToggleActive(tech.id)} className={`text-xs px-2.5 py-1 rounded font-bold ${tech.active ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-gray-700 text-gray-400'}`}>
                   {tech.active ? 'Attivo' : 'Disattivato'}
                 </button>
-                <button
-                  onClick={() => handleDeleteTechnician(tech.id)}
-                  className="text-xs p-1 text-gray-500 hover:text-red-400"
-                  title="Elimina"
-                >
-                  🗑️
-                </button>
+                <button onClick={() => handleDeleteTechnician(tech.id)} className="text-xs p-1 text-gray-500 hover:text-red-400" title="Elimina">🗑️</button>
               </div>
             </div>
           ))}
@@ -1521,7 +1356,7 @@ function TechniciansView({ technicians, setTechnicians, entries }) {
 // ----------------------------------------------------
 // 6. EXPORT VIEW
 // ----------------------------------------------------
-function ExportView({ entries, setEntries, technicians, setTechnicians, calculateMetrics }) {
+function ExportView({ entries, setEntries, technicians, setTechnicians, calculateMetrics, isServerConnected }) {
   const exportToExcel = () => {
     if (typeof XLSX === 'undefined') {
       alert("Libreria XLSX in caricamento...");
@@ -1594,6 +1429,21 @@ function ExportView({ entries, setEntries, technicians, setTechnicians, calculat
     document.body.removeChild(link);
   };
 
+  const downloadServerBackup = () => {
+    if (isServerConnected) {
+      window.open('/api/backup', '_blank');
+    } else {
+      const data = { technicians, entries };
+      const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(JSON.stringify(data, null, 2))}`;
+      const link = document.createElement("a");
+      link.setAttribute("href", jsonString);
+      link.setAttribute("download", `Fast_Prod_Backup_Local_${new Date().toISOString().split('T')[0]}.json`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+  };
+
   return (
     <div className="space-y-8">
       <div>
@@ -1634,6 +1484,16 @@ function ExportView({ entries, setEntries, technicians, setTechnicians, calculat
             Stampa / Salva PDF
           </button>
         </div>
+      </div>
+
+      <div className="glass-panel p-6 rounded-2xl border border-gray-800 flex justify-between items-center">
+        <div>
+          <h3 className="text-lg font-bold text-white">💾 Backup Database Persistente Server</h3>
+          <p className="text-xs text-gray-400 mt-1">Scarica un backup di ripristino di tutto il database memorizzato nel volume Docker.</p>
+        </div>
+        <button onClick={downloadServerBackup} className="btn-dark text-xs">
+          Scarica Backup JSON Database
+        </button>
       </div>
     </div>
   );

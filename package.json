@@ -1,17 +1,21 @@
 {
   "name": "fast_prod",
-  "version": "1.0.0",
-  "description": "Webapp per calcolare la produttività ed efficienza dei dipendenti dell'officina con Docker, export e badge top performer",
-  "main": "index.html",
+  "version": "2.0.0",
+  "description": "Webapp per calcolare la produttività ed efficienza dei dipendenti dell'officina con Database Persistente, REST API e Docker",
+  "main": "server/server.js",
   "scripts": {
-    "start": "docker compose up -d"
+    "start": "node server/server.js",
+    "docker:up": "docker compose up -d --build"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
   },
   "keywords": [
     "officina",
     "produttivita",
     "efficienza",
-    "tecnici",
-    "meccanici",
+    "database",
     "docker"
   ],
   "author": "Fast_Prod Team",
