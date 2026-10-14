@@ -1,16 +1,34 @@
-version: '3.8'
-
 services:
   fast_prod:
     build:
       context: .
       dockerfile: Dockerfile
+    image: fast_prod:3
     container_name: fast_prod_app
     ports:
-      - "8085:8080"   # Porta 8085 (server) per Nginx Proxy Manager o accesso diretto
+      # porta esterna 8085 → interna 8080 (accesso: http://IP-SERVER:8085)
+      - "8085:8080"
     volumes:
-      - ./data:/app/data   # VOLUME PERSISTENTE PER IL DATABASE (Non si perde mai nulla!)
-    restart: always
+      # volume persistente: database SQLite + backup giornalieri
+      - ./data:/app/data
     environment:
       - NODE_ENV=production
       - PORT=8080
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?crea il file .env partendo da env.example}
+      - VIEWER_PASSWORD=${VIEWER_PASSWORD:?crea il file .env partendo da env.example}
+      - SESSION_SECRET=${SESSION_SECRET:?crea il file .env partendo da env.example}
+      - TZ=${TZ:-Europe/Rome}
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-30}
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
