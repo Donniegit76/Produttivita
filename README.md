@@ -136,6 +136,29 @@ docker compose up -d
 Con `IMAGE` non impostato, `docker compose up -d --build` continua a costruire l'immagine in locale.
 L'immagine non contiene segreti: password e dati vivono nel `.env` e nel volume `./data`.
 
+### Pubblicazione automatica (GitHub Actions)
+
+Il workflow `.github/workflows/docker-publish.yml` testa il codice e poi costruisce e pubblica
+l'immagine quando pushi un **tag di versione**, senza comandi manuali.
+
+Configura una volta sola, in GitHub → *Settings → Secrets and variables → Actions*:
+
+| Secret | Valore |
+|---|---|
+| `DOCKERHUB_USERNAME` | `donniedream` |
+| `DOCKERHUB_TOKEN` | un **Access Token** di Docker Hub (Account Settings → Personal access tokens → *Read & Write*) — non la password |
+
+Per rilasciare una nuova versione:
+
+```bash
+git tag v3.2.0
+git push origin v3.2.0
+```
+
+Il workflow genera i tag `3.2.0`, `3.2`, `latest` e `sha-<commit>`. Si può avviare anche a mano da
+GitHub → *Actions → Build e pubblica su Docker Hub → Run workflow*. I test girano prima del push:
+se falliscono, l'immagine non viene pubblicata.
+
 ---
 
 ## Firewall
