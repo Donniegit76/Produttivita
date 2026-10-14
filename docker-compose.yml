@@ -6,8 +6,10 @@ services:
     image: fast_prod:3
     container_name: fast_prod_app
     ports:
-      # porta esterna 8085 → interna 8080 (accesso: http://IP-SERVER:8085)
-      - "8085:8080"
+      # porta esterna 8085 → interna 8080
+      # BIND_ADDRESS: metti l'IP LAN del server (es. 192.168.1.50) per non esporre
+      # la porta su altre interfacce. Default 0.0.0.0 (tutte le interfacce).
+      - "${BIND_ADDRESS:-0.0.0.0}:8085:8080"
     volumes:
       # volume persistente: database SQLite + backup giornalieri
       - ./data:/app/data

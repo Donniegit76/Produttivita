@@ -50,7 +50,8 @@ riscritta con **database SQLite**, **automatic saving**, **aggiornamento in temp
    nano .env
    ```
 
-   Variabili: `ADMIN_PASSWORD`, `VIEWER_PASSWORD`, `SESSION_SECRET`, `TZ`, `BACKUP_RETENTION_DAYS`.
+   Variabili: `ADMIN_PASSWORD`, `VIEWER_PASSWORD`, `SESSION_SECRET`, `TZ`, `BACKUP_RETENTION_DAYS`,
+   `BIND_ADDRESS` (consigliato: l'IP LAN del server, es. `192.168.1.50`).
 
    Il `SESSION_SECRET` deve essere lungo e casuale. Per generarlo:
 
@@ -97,6 +98,18 @@ dell'immagine.
   solo nell'interfaccia.
 - Pensata per la rete locale. Se in futuro la esponi tramite Nginx Proxy Manager con HTTPS, abilita
   `proxy_buffering off` per gli eventi SSE (`/api/events`) e aggiungi il flag `Secure` al cookie.
+
+---
+
+## Firewall
+
+- **Non serve** aprire porte sul router/firewall di rete: il port forwarding servirebbe solo per
+  l'accesso da Internet, che è da evitare.
+- **Docker e ufw**: le porte pubblicate da Docker passano da regole `iptables` che **aggirano ufw**,
+  quindi la 8085 risulta raggiungibile senza aprire nulla. Per limitarla alla LAN, imposta
+  `BIND_ADDRESS` al posto giusto: con `BIND_ADDRESS=192.168.1.50` la porta è esposta solo su
+  quell'interfaccia.
+- Per controllare: `sudo ufw status` e `hostname -I` (per conoscere l'IP LAN).
 
 ---
 
