@@ -136,6 +136,27 @@ Regole di business applicate in transazione:
 - Mantengo tutte le funzioni attuali: 6 viste, coppa Top Performer, export Excel/CSV, stampa.
 - Node 22 sul server (già presente anche in locale per sviluppo e test).
 
+## Stato di avanzamento (aggiornato)
+
+- **Passi 0-8 completati** sul branch `rewrite` (commit `286276e`): backend SQLite + API + SSE + ruoli,
+  frontend React/Vite/TS/Tailwind, autosave, backup/ripristino, export e stampa.
+- Verifiche eseguite in locale:
+  - `npm run typecheck` → nessun errore (server + web)
+  - `npm run test` → **24 test backend + 6 test frontend** verdi (inclusi autosave e ruoli)
+  - `npm run build` → build di produzione web + server senza errori
+  - smoke test del bundle di produzione: `/api/health`, login, creazione tecnico, snapshot e
+    frontend statico tutti OK
+- **Passi 9-10 restano a te** (Docker e collaudo in LAN):
+
+  ```bash
+  cp env.example .env      # imposta ADMIN_PASSWORD, VIEWER_PASSWORD, SESSION_SECRET
+  docker compose up -d --build
+  ```
+
+  Verifica attesa: `http://IP-SERVER:8085` risponde; `docker compose down && docker compose up -d`
+  conserva i dati; compare un file in `data/backups/`; con due dispositivi aperti una modifica fatta
+  con l'admin appare sull'altro entro un secondo; il viewer non riesce a scrivere.
+
 ## Fuori scope v1 (possibili estensioni future)
 
 Dettaglio per commessa/cliente, modalità offline con coda locale, più account admin con audit, HTTPS/dominio, notifiche, PWA installabile.
