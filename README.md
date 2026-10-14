@@ -1,4 +1,4 @@
-# Fast_Prod 3.0 🏆
+# Fast_Prod 3.1 🏆
 
 Gestione della produttività e dell'efficienza dei tecnici di officina (meccanica/elettrauto),
 riscritta con **database SQLite**, **automatic saving**, **aggiornamento in tempo reale**,
@@ -8,7 +8,7 @@ riscritta con **database SQLite**, **automatic saving**, **aggiornamento in temp
 
 ## Cosa è cambiato rispetto alla versione precedente
 
-| Problema della versione vecchia | Soluzione in Fast_Prod 3.0 |
+| Problema della versione vecchia | Soluzione in Fast_Prod 3.1 |
 |---|---|
 | Il salvataggio automatico non partiva (bug React degli updater differiti) | Autosave con debounce centralizzato + upsert idempotente, con test automatici che lo verificano |
 | Nessun aggiornamento sugli altri dispositivi | Canale **SSE** (push immediato) + polling di sicurezza ogni 30 s |
@@ -17,6 +17,10 @@ riscritta con **database SQLite**, **automatic saving**, **aggiornamento in temp
 | Nessuna integrità: tecnici cancellati con ore orfane | Disattivazione + cancellazione solo se il tecnico non ha ore |
 | CDN obbligatorie (app inutile offline) | Frontend compilato e incluso nell'immagine: **nessuna dipendenza da Internet** |
 | Monolite di 1500 righe senza moduli/test | Backend TypeScript modulare + frontend React/Vite, con test |
+| Tutti i tecnici in un'unica classifica | **Reparti** separati con selezione da menu a tendina in tutta l'app |
+| Tasto Stampa = pagina corrente | **Report mensile** stampabile (mese + reparto) con colonna **Resa** |
+| Uso scomodo da telefono | **Mobile**: schede al posto delle tabelle sotto il breakpoint tablet |
+| Anagrafica tecnici non modificabile | **Modifica** di nome, ruolo, colore e reparto |
 
 ---
 
