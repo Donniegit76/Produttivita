@@ -120,16 +120,36 @@ dell'immagine.
 
 ## Modello dati
 
-- `technicians(id, name, role, avatar_color, target_hours, active, created_at)`
-- `entries(id, technician_id, period_type|week|month, week_year, week_number, calendar_year,
-  calendar_month, hours_presence, hours_worked, hours_billed, hours_to_be_billed, notes, updated_at)`
+- `departments(id, name univoco, color, created_at)`
+- `technicians(id, name, role, avatar_color, target_hours, active, department_id, created_at)`
+- `entries(id, technician_id, department_id, period_type|week|month, week_year, week_number,
+  calendar_year, calendar_month, hours_presence, hours_worked, hours_billed, hours_to_be_billed,
+  notes, updated_at)`
 
 Regole:
 - Una settimana appartiene al mese in cui cadono più suoi giorni (convenzione ISO).
 - Per uno stesso **tecnico/mese** non possono coesistere righe settimanali e un totale mensile
   (**blocco alla fonte**).
-- KPI invariati: produttività = lavorate/presenza, efficienza = fatturate/lavorate,
-  rendimento = fatturate/presenza.
+- Ogni tecnico appartiene a **un solo reparto**; il reparto è obbligatorio.
+- La **riga di ore fotografa il reparto** al momento del salvataggio: spostare un tecnico non cambia i
+  report passati. Modificare una riga vecchia **non** riscrive il suo reparto.
+- Eliminare un reparto è possibile solo se non contiene tecnici **e** non è usato da righe storiche
+  (in alternativa si rinomina).
+- KPI: produttività = lavorate/presenza, efficienza = fatturate/lavorate, **resa = fatturate/presenza**.
+
+---
+
+## Reparti, report e mobile
+
+- **Reparti**: si creano/rinominano/eliminano da *Tecnici e reparti*. Un **menu a tendina nell'header**
+  filtra tutte le viste (dashboard, inserimento, mensile, annuale, export e stampa).
+- **Modifica tecnici**: dalla scheda del tecnico puoi correggere nome, ruolo, colore e reparto.
+- **Report mensile stampabile**: il pulsante Stampa (header, vista Mensile ed Export) produce sempre il
+  **report del mese e del reparto selezionati** — intestazione, Top Performer, tabella per tecnico con
+  presenza, lavorate, fatturate, da fatturare, produttività, efficienza e **resa**, più i totali. Senza
+  grafici, pronto per PDF/firma.
+- **Mobile**: sotto la larghezza tablet le tabelle diventano schede (card) con campi grandi; i campi
+  usano font 16px per evitare lo zoom automatico di iOS.
 
 ---
 

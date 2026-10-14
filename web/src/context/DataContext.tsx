@@ -11,7 +11,7 @@ import {
 import { weekMajorityMonth } from '@shared/periods';
 import { useRealtime } from '../hooks/useRealtime';
 import { api, ApiError } from '../lib/api';
-import type { BackupPayload, Entry, EntryInput, Technician } from '../lib/types';
+import type { BackupPayload, Department, Entry, EntryInput, Technician } from '../lib/types';
 import { useAuth } from './AuthContext';
 
 const SAVE_DEBOUNCE_MS = 600;
@@ -25,6 +25,7 @@ export interface SaveState {
 interface DataValue {
   loading: boolean;
   loadError: string | null;
+  departments: Department[];
   technicians: Technician[];
   entries: Entry[];
   revision: number;
@@ -36,6 +37,9 @@ interface DataValue {
   createTechnician: (input: Partial<Technician>) => Promise<void>;
   updateTechnician: (id: string, input: Partial<Technician>) => Promise<void>;
   deleteTechnician: (id: string) => Promise<void>;
+  createDepartment: (input: { name: string; color?: string }) => Promise<void>;
+  updateDepartment: (id: string, input: { name?: string; color?: string }) => Promise<void>;
+  deleteDepartment: (id: string) => Promise<void>;
   restore: (payload: BackupPayload) => Promise<void>;
   reload: () => Promise<void>;
 }
@@ -70,6 +74,7 @@ function optimisticEntry(input: EntryInput): Entry {
   return {
     id: `local:${inputKeyOf(input)}`,
     technicianId: input.technicianId,
+    departmentId: null,
     periodType: input.periodType,
     weekYear: input.periodType === 'week' ? Number(input.weekYear) : null,
     weekNumber: input.periodType === 'week' ? Number(input.weekNumber) : null,
@@ -91,6 +96,7 @@ function mergeEntries(base: Entry[], updates: Entry[]): Entry[] {
 
 export function DataProvider({ children }: { children: ReactNode }) {
   const { role } = useAuth();
+  const [departments, setDepartments] = useState<Department[]>([]);
   const [technicians, setTechnicians] = useState<Technician[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [revision, setRevision] = useState(0);
@@ -105,6 +111,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     try {
       const snapshot = await api.snapshot();
       const optimistic = Array.from(pending.current.values()).map(optimisticEntry);
+      setDepartments(snapshot.departments);
       setTechnicians(snapshot.technicians);
       setEntries(mergeEntries(snapshot.entries, optimistic));
       setRevision(snapshot.revision);
@@ -167,14 +174,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
     [flush, role],
   );
 
-  const deleteEntry = useCallback(
-    async (id: string) => {
-      const { revision: remote } = await api.deleteEntry(id);
-      setRevision(remote);
-      setEntries((prev) => prev.filter((entry) => entry.id !== id));
-    },
-    [],
-  );
+  const deleteEntry = useCallback(async (id: string) => {
+    const { revision: remote } = await api.deleteEntry(id);
+    setRevision(remote);
+    setEntries((prev) => prev.filter((entry) => entry.id !== id));
+  }, []);
 
   const createTechnician = useCallback(async (input: Partial<Technician>) => {
     const { technician, revision: remote } = await api.createTechnician(input);
@@ -194,6 +198,28 @@ export function DataProvider({ children }: { children: ReactNode }) {
     setTechnicians((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
+  const createDepartment = useCallback(async (input: { name: string; color?: string }) => {
+    const { department, revision: remote } = await api.createDepartment(input);
+    setRevision(remote);
+    setDepartments((prev) => [...prev, department].sort((a, b) => a.name.localeCompare(b.name, 'it')));
+  }, []);
+
+  const updateDepartment = useCallback(async (id: string, input: { name?: string; color?: string }) => {
+    const { department, revision: remote } = await api.updateDepartment(id, input);
+    setRevision(remote);
+    setDepartments((prev) =>
+      prev
+        .map((d) => (d.id === id ? { ...department, technicianCount: d.technicianCount } : d))
+        .sort((a, b) => a.name.localeCompare(b.name, 'it')),
+    );
+  }, []);
+
+  const deleteDepartment = useCallback(async (id: string) => {
+    const { revision: remote } = await api.deleteDepartment(id);
+    setRevision(remote);
+    setDepartments((prev) => prev.filter((d) => d.id !== id));
+  }, []);
+
   const restore = useCallback(
     async (payload: BackupPayload) => {
       await api.restore(payload);
@@ -209,6 +235,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
     () => ({
       loading,
       loadError,
+      departments,
       technicians,
       entries,
       revision,
@@ -220,12 +247,16 @@ export function DataProvider({ children }: { children: ReactNode }) {
       createTechnician,
       updateTechnician,
       deleteTechnician,
+      createDepartment,
+      updateDepartment,
+      deleteDepartment,
       restore,
       reload,
     }),
     [
       loading,
       loadError,
+      departments,
       technicians,
       entries,
       revision,
@@ -237,6 +268,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       createTechnician,
       updateTechnician,
       deleteTechnician,
+      createDepartment,
+      updateDepartment,
+      deleteDepartment,
       restore,
       reload,
     ],

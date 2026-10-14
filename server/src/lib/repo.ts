@@ -2,6 +2,14 @@ import { randomUUID } from 'node:crypto';
 import type { DB } from './db';
 import { MONTH_NAMES_IT, weekMajorityMonth } from '../../../shared/periods';
 
+export interface Department {
+  id: string;
+  name: string;
+  color: string;
+  createdAt: string;
+  technicianCount: number;
+}
+
 export interface Technician {
   id: string;
   name: string;
@@ -9,12 +17,14 @@ export interface Technician {
   avatarColor: string;
   targetHours: number;
   active: boolean;
+  departmentId: string | null;
   createdAt: string;
 }
 
 export interface Entry {
   id: string;
   technicianId: string;
+  departmentId: string | null;
   periodType: 'week' | 'month';
   weekYear: number | null;
   weekNumber: number | null;
@@ -53,6 +63,14 @@ export class ApiError extends Error {
   }
 }
 
+interface DepartmentRow {
+  id: string;
+  name: string;
+  color: string;
+  created_at: string;
+  technician_count?: number;
+}
+
 interface TechnicianRow {
   id: string;
   name: string;
@@ -60,12 +78,14 @@ interface TechnicianRow {
   avatar_color: string;
   target_hours: number;
   active: number;
+  department_id: string | null;
   created_at: string;
 }
 
 interface EntryRow {
   id: string;
   technician_id: string;
+  department_id: string | null;
   period_type: 'week' | 'month';
   week_year: number | null;
   week_number: number | null;
@@ -79,6 +99,14 @@ interface EntryRow {
   updated_at: string;
 }
 
+const toDepartment = (row: DepartmentRow): Department => ({
+  id: row.id,
+  name: row.name,
+  color: row.color,
+  createdAt: row.created_at,
+  technicianCount: row.technician_count ?? 0,
+});
+
 const toTechnician = (row: TechnicianRow): Technician => ({
   id: row.id,
   name: row.name,
@@ -86,12 +114,14 @@ const toTechnician = (row: TechnicianRow): Technician => ({
   avatarColor: row.avatar_color,
   targetHours: row.target_hours,
   active: row.active === 1,
+  departmentId: row.department_id,
   createdAt: row.created_at,
 });
 
 const toEntry = (row: EntryRow): Entry => ({
   id: row.id,
   technicianId: row.technician_id,
+  departmentId: row.department_id,
   periodType: row.period_type,
   weekYear: row.week_year,
   weekNumber: row.week_number,
@@ -104,6 +134,15 @@ const toEntry = (row: EntryRow): Entry => ({
   notes: row.notes,
   updatedAt: row.updated_at,
 });
+
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    String((error as { code: string }).code).startsWith('SQLITE_CONSTRAINT')
+  );
+}
 
 // ---------------------------------------------------------------- revision
 
@@ -121,6 +160,115 @@ function bumpRevision(db: DB): number {
     "INSERT INTO meta (key, value) VALUES ('revision', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
   ).run(String(next));
   return next;
+}
+
+// ---------------------------------------------------------------- departments
+
+export function listDepartments(db: DB): Department[] {
+  const rows = db
+    .prepare(
+      `SELECT d.*, (SELECT COUNT(*) FROM technicians t WHERE t.department_id = d.id) AS technician_count
+         FROM departments d
+        ORDER BY d.name COLLATE NOCASE ASC`,
+    )
+    .all() as DepartmentRow[];
+  return rows.map(toDepartment);
+}
+
+export function createDepartment(
+  db: DB,
+  input: { name?: string; color?: string },
+): { department: Department; revision: number } {
+  const name = (input.name ?? '').trim();
+  if (!name) throw new ApiError(400, 'INVALID_NAME', 'Il nome del reparto è obbligatorio.');
+  const row: DepartmentRow = {
+    id: `dept-${randomUUID()}`,
+    name,
+    color: input.color || '#06b6d4',
+    created_at: new Date().toISOString(),
+    technician_count: 0,
+  };
+  try {
+    const revision = db.transaction(() => {
+      db.prepare(
+        'INSERT INTO departments (id, name, color, created_at) VALUES (@id, @name, @color, @created_at)',
+      ).run(row);
+      return bumpRevision(db);
+    })();
+    return { department: toDepartment(row), revision };
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      throw new ApiError(409, 'DEPT_NAME_TAKEN', 'Esiste già un reparto con questo nome.');
+    }
+    throw error;
+  }
+}
+
+export function updateDepartment(
+  db: DB,
+  id: string,
+  input: { name?: string; color?: string },
+): { department: Department; revision: number } {
+  const existing = db.prepare('SELECT * FROM departments WHERE id = ?').get(id) as
+    | DepartmentRow
+    | undefined;
+  if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Reparto non trovato.');
+  const name = input.name !== undefined ? input.name.trim() : existing.name;
+  if (!name) throw new ApiError(400, 'INVALID_NAME', 'Il nome del reparto è obbligatorio.');
+  const color = input.color ?? existing.color;
+  try {
+    const revision = db.transaction(() => {
+      db.prepare('UPDATE departments SET name = ?, color = ? WHERE id = ?').run(name, color, id);
+      return bumpRevision(db);
+    })();
+    const count = db
+      .prepare('SELECT COUNT(*) AS n FROM technicians WHERE department_id = ?')
+      .get(id) as { n: number };
+    return {
+      department: { id, name, color, createdAt: existing.created_at, technicianCount: count.n },
+      revision,
+    };
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      throw new ApiError(409, 'DEPT_NAME_TAKEN', 'Esiste già un reparto con questo nome.');
+    }
+    throw error;
+  }
+}
+
+export function deleteDepartment(db: DB, id: string): number {
+  const existing = db.prepare('SELECT id FROM departments WHERE id = ?').get(id);
+  if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Reparto non trovato.');
+  const technicians = db
+    .prepare('SELECT COUNT(*) AS n FROM technicians WHERE department_id = ?')
+    .get(id) as { n: number };
+  if (technicians.n > 0) {
+    throw new ApiError(
+      409,
+      'DEPT_HAS_TECHNICIANS',
+      'Questo reparto contiene tecnici: spostali in un altro reparto prima di eliminarlo.',
+    );
+  }
+  const entries = db.prepare('SELECT COUNT(*) AS n FROM entries WHERE department_id = ?').get(id) as {
+    n: number;
+  };
+  if (entries.n > 0) {
+    throw new ApiError(
+      409,
+      'DEPT_HAS_ENTRIES',
+      'Questo reparto è usato da righe di ore storiche: puoi solo rinominarlo.',
+    );
+  }
+  return db.transaction(() => {
+    db.prepare('DELETE FROM departments WHERE id = ?').run(id);
+    return bumpRevision(db);
+  })();
+}
+
+function assertDepartmentExists(db: DB, id: string): void {
+  if (!db.prepare('SELECT 1 FROM departments WHERE id = ?').get(id)) {
+    throw new ApiError(400, 'INVALID_DEPARTMENT', 'Reparto non valido.');
+  }
 }
 
 // ---------------------------------------------------------------- technicians
@@ -141,10 +289,21 @@ function technicianName(db: DB, id: string): string {
 
 export function createTechnician(
   db: DB,
-  input: { name?: string; role?: string; avatarColor?: string; targetHours?: number },
+  input: {
+    name?: string;
+    role?: string;
+    avatarColor?: string;
+    targetHours?: number;
+    departmentId?: string;
+  },
 ): { technician: Technician; revision: number } {
   const name = (input.name ?? '').trim();
   if (!name) throw new ApiError(400, 'INVALID_NAME', 'Il nome del tecnico è obbligatorio.');
+  const departmentId = String(input.departmentId ?? '');
+  if (!departmentId) {
+    throw new ApiError(400, 'INVALID_DEPARTMENT', 'Seleziona il reparto del tecnico.');
+  }
+  assertDepartmentExists(db, departmentId);
   const technician: Technician = {
     id: randomUUID(),
     name,
@@ -152,12 +311,13 @@ export function createTechnician(
     avatarColor: input.avatarColor || '#f59e0b',
     targetHours: Number.isFinite(input.targetHours) ? Number(input.targetHours) : 40,
     active: true,
+    departmentId,
     createdAt: new Date().toISOString(),
   };
   const revision = db.transaction(() => {
     db.prepare(
-      `INSERT INTO technicians (id, name, role, avatar_color, target_hours, active, created_at)
-       VALUES (@id, @name, @role, @avatarColor, @targetHours, 1, @createdAt)`,
+      `INSERT INTO technicians (id, name, role, avatar_color, target_hours, active, department_id, created_at)
+       VALUES (@id, @name, @role, @avatarColor, @targetHours, 1, @departmentId, @createdAt)`,
     ).run(technician);
     return bumpRevision(db);
   })();
@@ -167,12 +327,20 @@ export function createTechnician(
 export function updateTechnician(
   db: DB,
   id: string,
-  input: { name?: string; role?: string; avatarColor?: string; targetHours?: number; active?: boolean },
+  input: {
+    name?: string;
+    role?: string;
+    avatarColor?: string;
+    targetHours?: number;
+    active?: boolean;
+    departmentId?: string;
+  },
 ): { technician: Technician; revision: number } {
   const existing = db.prepare('SELECT * FROM technicians WHERE id = ?').get(id) as
     | TechnicianRow
     | undefined;
   if (!existing) throw new ApiError(404, 'NOT_FOUND', 'Tecnico non trovato.');
+  if (input.departmentId !== undefined) assertDepartmentExists(db, input.departmentId);
   const merged: Technician = {
     id,
     name: input.name !== undefined ? input.name.trim() : existing.name,
@@ -183,6 +351,7 @@ export function updateTechnician(
         ? Number(input.targetHours)
         : existing.target_hours,
     active: input.active !== undefined ? Boolean(input.active) : existing.active === 1,
+    departmentId: input.departmentId ?? existing.department_id,
     createdAt: existing.created_at,
   };
   if (!merged.name) throw new ApiError(400, 'INVALID_NAME', 'Il nome del tecnico è obbligatorio.');
@@ -190,7 +359,7 @@ export function updateTechnician(
     db.prepare(
       `UPDATE technicians
          SET name = @name, role = @role, avatar_color = @avatarColor,
-             target_hours = @targetHours, active = @active
+             target_hours = @targetHours, active = @active, department_id = @departmentId
        WHERE id = @id`,
     ).run({ ...merged, active: merged.active ? 1 : 0 });
     return bumpRevision(db);
@@ -234,9 +403,13 @@ function nonNegative(value: unknown, field: string): number {
   return n;
 }
 
-function resolvePeriod(
-  input: EntryInput,
-): { periodType: 'week' | 'month'; weekYear: number | null; weekNumber: number | null; calendarYear: number; calendarMonth: number } {
+function resolvePeriod(input: EntryInput): {
+  periodType: 'week' | 'month';
+  weekYear: number | null;
+  weekNumber: number | null;
+  calendarYear: number;
+  calendarMonth: number;
+} {
   if (input.periodType === 'week') {
     const weekYear = Number(input.weekYear);
     const weekNumber = Number(input.weekNumber);
@@ -259,12 +432,16 @@ function resolvePeriod(
 
 /**
  * Inserisce o aggiorna la riga di un tecnico per il periodo indicato.
- * Applica il blocco alla fonte: per uno stesso tecnico/anno/mese non possono
- * coesistere righe settimanali e un totale mensile.
+ * - blocca alla fonte settimane + totale mensile sullo stesso tecnico/mese;
+ * - alla prima scrittura fotografa il reparto attuale del tecnico;
+ * - in modifica conserva il reparto storico della riga.
  */
 export function upsertEntry(db: DB, input: EntryInput): { entry: Entry; revision: number } {
   const techId = String(input.technicianId ?? '');
-  if (!db.prepare('SELECT 1 FROM technicians WHERE id = ?').get(techId)) {
+  const technician = db.prepare('SELECT department_id FROM technicians WHERE id = ?').get(techId) as
+    | { department_id: string | null }
+    | undefined;
+  if (!technician) {
     throw new ApiError(404, 'NOT_FOUND', 'Tecnico non trovato.');
   }
   const period = resolvePeriod(input);
@@ -272,6 +449,7 @@ export function upsertEntry(db: DB, input: EntryInput): { entry: Entry; revision
   const values = {
     id: randomUUID(),
     technicianId: techId,
+    departmentId: technician.department_id,
     periodType: period.periodType,
     weekYear: period.weekYear,
     weekNumber: period.weekNumber,
@@ -286,7 +464,6 @@ export function upsertEntry(db: DB, input: EntryInput): { entry: Entry; revision
   };
 
   return db.transaction(() => {
-    // Blocco settimane + totale mensile sullo stesso tecnico/mese
     const conflict = db
       .prepare(
         `SELECT 1 FROM entries
@@ -317,6 +494,7 @@ export function upsertEntry(db: DB, input: EntryInput): { entry: Entry; revision
       | undefined;
 
     if (existing) {
+      // in modifica NON si riscrive department_id: resta il reparto storico
       db.prepare(
         `UPDATE entries SET
            calendar_year = @calendarYear, calendar_month = @calendarMonth,
@@ -328,11 +506,13 @@ export function upsertEntry(db: DB, input: EntryInput): { entry: Entry; revision
     } else {
       db.prepare(
         `INSERT INTO entries
-           (id, technician_id, period_type, week_year, week_number, calendar_year, calendar_month,
-            hours_presence, hours_worked, hours_billed, hours_to_be_billed, notes, updated_at)
+           (id, technician_id, department_id, period_type, week_year, week_number,
+            calendar_year, calendar_month, hours_presence, hours_worked, hours_billed,
+            hours_to_be_billed, notes, updated_at)
          VALUES
-           (@id, @technicianId, @periodType, @weekYear, @weekNumber, @calendarYear, @calendarMonth,
-            @hoursPresence, @hoursWorked, @hoursBilled, @hoursToBeBilled, @notes, @updatedAt)`,
+           (@id, @technicianId, @departmentId, @periodType, @weekYear, @weekNumber,
+            @calendarYear, @calendarMonth, @hoursPresence, @hoursWorked, @hoursBilled,
+            @hoursToBeBilled, @notes, @updatedAt)`,
       ).run(values);
     }
 
@@ -357,6 +537,7 @@ export interface BackupPayload {
   version: number;
   exportedAt: string;
   revision: number;
+  departments: Department[];
   technicians: Technician[];
   entries: Entry[];
 }
@@ -366,6 +547,7 @@ export function exportBackup(db: DB): BackupPayload {
     version: 3,
     exportedAt: new Date().toISOString(),
     revision: getRevision(db),
+    departments: listDepartments(db),
     technicians: listTechnicians(db),
     entries: listEntries(db),
   };
@@ -380,6 +562,9 @@ export function restoreBackup(db: DB, payload: unknown): number {
   if (!isRecord(payload) || !Array.isArray(payload.technicians) || !Array.isArray(payload.entries)) {
     throw new ApiError(400, 'INVALID_BACKUP', 'Struttura del backup non valida.');
   }
+  const departments = Array.isArray((payload as { departments?: unknown }).departments)
+    ? ((payload as { departments: unknown[] }).departments)
+    : [];
   const technicians = payload.technicians as unknown[];
   const entries = payload.entries as unknown[];
   for (const t of technicians) {
@@ -393,24 +578,55 @@ export function restoreBackup(db: DB, payload: unknown): number {
     }
   }
 
+  const insertDepartment = db.prepare(
+    'INSERT INTO departments (id, name, color, created_at) VALUES (@id, @name, @color, @createdAt)',
+  );
   const insertTech = db.prepare(
-    `INSERT INTO technicians (id, name, role, avatar_color, target_hours, active, created_at)
-     VALUES (@id, @name, @role, @avatarColor, @targetHours, @active, @createdAt)`,
+    `INSERT INTO technicians (id, name, role, avatar_color, target_hours, active, department_id, created_at)
+     VALUES (@id, @name, @role, @avatarColor, @targetHours, @active, @departmentId, @createdAt)`,
   );
   const insertEntry = db.prepare(
     `INSERT INTO entries
-       (id, technician_id, period_type, week_year, week_number, calendar_year, calendar_month,
-        hours_presence, hours_worked, hours_billed, hours_to_be_billed, notes, updated_at)
+       (id, technician_id, department_id, period_type, week_year, week_number,
+        calendar_year, calendar_month, hours_presence, hours_worked, hours_billed,
+        hours_to_be_billed, notes, updated_at)
      VALUES
-       (@id, @technicianId, @periodType, @weekYear, @weekNumber, @calendarYear, @calendarMonth,
-        @hoursPresence, @hoursWorked, @hoursBilled, @hoursToBeBilled, @notes, @updatedAt)`,
+       (@id, @technicianId, @departmentId, @periodType, @weekYear, @weekNumber,
+        @calendarYear, @calendarMonth, @hoursPresence, @hoursWorked, @hoursBilled,
+        @hoursToBeBilled, @notes, @updatedAt)`,
   );
 
   return db.transaction(() => {
     db.prepare('DELETE FROM entries').run();
     db.prepare('DELETE FROM technicians').run();
+    db.prepare('DELETE FROM departments').run();
+
+    const now = new Date().toISOString();
+    const departmentIds = new Set<string>();
+    for (const raw of departments) {
+      const d = raw as Record<string, unknown>;
+      if (!isRecord(d) || typeof d.id !== 'string' || typeof d.name !== 'string') continue;
+      insertDepartment.run({
+        id: d.id,
+        name: d.name,
+        color: String(d.color ?? '#06b6d4'),
+        createdAt: String(d.createdAt ?? now),
+      });
+      departmentIds.add(d.id);
+    }
+    if (departmentIds.size === 0) {
+      insertDepartment.run({ id: 'dept-generale', name: 'Generale', color: '#06b6d4', createdAt: now });
+      departmentIds.add('dept-generale');
+    }
+    const fallbackDepartment = [...departmentIds][0];
+
+    const technicianDepartment = new Map<string, string>();
     for (const raw of technicians) {
       const t = raw as Record<string, unknown>;
+      const departmentId =
+        typeof t.departmentId === 'string' && departmentIds.has(t.departmentId)
+          ? t.departmentId
+          : fallbackDepartment;
       insertTech.run({
         id: String(t.id),
         name: String(t.name),
@@ -418,8 +634,10 @@ export function restoreBackup(db: DB, payload: unknown): number {
         avatarColor: String(t.avatarColor ?? '#f59e0b'),
         targetHours: Number(t.targetHours ?? 40),
         active: t.active === false ? 0 : 1,
-        createdAt: String(t.createdAt ?? new Date().toISOString()),
+        departmentId,
+        createdAt: String(t.createdAt ?? now),
       });
+      technicianDepartment.set(String(t.id), departmentId);
     }
     for (const raw of entries) {
       const e = raw as Record<string, unknown>;
@@ -433,9 +651,15 @@ export function restoreBackup(db: DB, payload: unknown): number {
         calendarYear = derived.calendarYear;
         calendarMonth = derived.calendarMonth;
       }
+      const technicianId = String(e.technicianId);
+      const departmentId =
+        typeof e.departmentId === 'string' && departmentIds.has(e.departmentId)
+          ? e.departmentId
+          : technicianDepartment.get(technicianId) ?? fallbackDepartment;
       insertEntry.run({
         id: String(e.id ?? randomUUID()),
-        technicianId: String(e.technicianId),
+        technicianId,
+        departmentId,
         periodType,
         weekYear,
         weekNumber,
@@ -446,7 +670,7 @@ export function restoreBackup(db: DB, payload: unknown): number {
         hoursBilled: Number(e.hoursBilled ?? 0),
         hoursToBeBilled: Number(e.hoursToBeBilled ?? 0),
         notes: String(e.notes ?? ''),
-        updatedAt: String(e.updatedAt ?? new Date().toISOString()),
+        updatedAt: String(e.updatedAt ?? now),
       });
     }
     return bumpRevision(db);

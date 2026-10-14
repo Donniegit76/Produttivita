@@ -1,24 +1,30 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { Line } from 'react-chartjs-2';
 import 'chart.js/auto';
 import { MONTH_NAMES_IT } from '@shared/periods';
 import { useData } from '../context/DataContext';
+import { useFilters } from '../context/FiltersContext';
+import { matchesDepartment } from '../lib/filters';
 import { formatHours, formatPercent } from '../lib/format';
 import { calculateMetrics, getTopPerformer } from '../lib/kpi';
 
 export function Yearly() {
-  const { entries, activeTechnicians } = useData();
+  const { entries, technicians } = useData();
+  const { departmentId, selectedYear, setSelectedYear } = useFilters();
   const now = new Date();
-  const [calendarYear, setCalendarYear] = useState(now.getFullYear());
 
   const yearEntries = useMemo(
-    () => entries.filter((entry) => entry.calendarYear === calendarYear),
-    [entries, calendarYear],
+    () =>
+      entries.filter(
+        (entry) =>
+          entry.calendarYear === selectedYear && matchesDepartment(entry.departmentId, departmentId),
+      ),
+    [entries, selectedYear, departmentId],
   );
 
   const topPerformer = useMemo(
-    () => getTopPerformer(yearEntries, activeTechnicians),
-    [yearEntries, activeTechnicians],
+    () => getTopPerformer(yearEntries, technicians),
+    [yearEntries, technicians],
   );
 
   const monthlyTrend = useMemo(
@@ -35,13 +41,13 @@ export function Yearly() {
   const years = [now.getFullYear() - 2, now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1];
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-extrabold text-white tracking-tight">Riepilogo annuale · {calendarYear}</h1>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">Riepilogo annuale · {selectedYear}</h1>
           <p className="text-sm text-gray-400 mt-1">Andamento annuale delle ore e produttività complessiva.</p>
         </div>
-        <select className="workshop-select" value={calendarYear} onChange={(e) => setCalendarYear(Number(e.target.value))}>
+        <select className="workshop-select" value={selectedYear} onChange={(e) => setSelectedYear(Number(e.target.value))}>
           {years.map((year) => (
             <option key={year} value={year}>
               Anno {year}
@@ -51,26 +57,26 @@ export function Yearly() {
       </div>
 
       {topPerformer && (
-        <div className="glass-panel trophy-card-gold p-6 rounded-2xl flex items-center justify-between">
+        <div className="glass-panel trophy-card-gold p-5 sm:p-6 rounded-2xl flex items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             <span className="text-4xl">🏆</span>
             <div>
-              <span className="text-xs font-bold uppercase text-amber-400">Tecnico dell'anno {calendarYear}</span>
-              <h2 className="text-2xl font-black text-white">{topPerformer.name}</h2>
+              <span className="text-xs font-bold uppercase text-amber-400">Tecnico dell'anno {selectedYear}</span>
+              <h2 className="text-xl sm:text-2xl font-black text-white">{topPerformer.name}</h2>
             </div>
           </div>
           <div className="font-mono-num text-right">
-            <span className="text-xs text-gray-400 block">Produttività media annuale</span>
-            <span className="text-2xl font-extrabold text-amber-400">
+            <span className="text-xs text-gray-400 block">Produttività media</span>
+            <span className="text-xl sm:text-2xl font-extrabold text-amber-400">
               {formatPercent(topPerformer.metrics.productivity)}
             </span>
           </div>
         </div>
       )}
 
-      <div className="glass-panel rounded-2xl p-6">
-        <h3 className="text-lg font-bold text-white mb-4">Trend mensile ore ({calendarYear})</h3>
-        <div className="h-80 w-full">
+      <div className="glass-panel rounded-2xl p-4 sm:p-6">
+        <h3 className="text-lg font-bold text-white mb-4">Trend mensile ore ({selectedYear})</h3>
+        <div className="h-72 sm:h-80 w-full">
           <Line
             data={{
               labels: monthlyTrend.map((item) => item.name.substring(0, 3)),
@@ -112,7 +118,7 @@ export function Yearly() {
         </div>
       </div>
 
-      <div className="glass-panel rounded-2xl p-6">
+      <div className="glass-panel rounded-2xl p-4 sm:p-6">
         <h3 className="text-lg font-bold text-white mb-4">Dettaglio per mese</h3>
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
@@ -124,6 +130,7 @@ export function Yearly() {
                 <th className="py-3 px-4 text-center">Fatturate</th>
                 <th className="py-3 px-4 text-center">Produttività %</th>
                 <th className="py-3 px-4 text-center">Efficienza %</th>
+                <th className="py-3 px-4 text-center">Resa %</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800/50 text-sm">
@@ -135,6 +142,7 @@ export function Yearly() {
                   <td className="py-3 px-4 text-center font-mono-num text-emerald-400">{formatHours(item.metrics.billed)} h</td>
                   <td className="py-3 px-4 text-center font-mono-num">{formatPercent(item.metrics.productivity)}</td>
                   <td className="py-3 px-4 text-center font-mono-num">{formatPercent(item.metrics.efficiency)}</td>
+                  <td className="py-3 px-4 text-center font-mono-num text-cyan-300">{formatPercent(item.metrics.globalRendimento)}</td>
                 </tr>
               ))}
             </tbody>

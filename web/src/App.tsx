@@ -3,6 +3,7 @@ import { Layout, type TabKey } from './components/Layout';
 import { Login } from './components/Login';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { DataProvider } from './context/DataContext';
+import { FiltersProvider } from './context/FiltersContext';
 
 function Shell() {
   const { role, loading } = useAuth();
@@ -15,7 +16,9 @@ function Shell() {
 
   return (
     <DataProvider>
-      <Layout tab={tab} setTab={setTab} />
+      <FiltersProvider>
+        <Layout tab={tab} setTab={setTab} />
+      </FiltersProvider>
     </DataProvider>
   );
 }

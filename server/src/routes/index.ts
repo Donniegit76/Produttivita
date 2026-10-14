@@ -6,14 +6,18 @@ import type { AppConfig } from '../lib/config';
 import type { RealtimeHub } from '../lib/realtime';
 import {
   ApiError,
+  createDepartment,
   createTechnician,
+  deleteDepartment,
   deleteEntry,
   deleteTechnician,
   exportBackup,
   getRevision,
+  listDepartments,
   listEntries,
   listTechnicians,
   restoreBackup,
+  updateDepartment,
   updateTechnician,
   upsertEntry,
   type EntryInput,
@@ -103,6 +107,7 @@ export function registerRoutes(app: Express, ctx: RouteContext): void {
   app.get('/api/snapshot', requireAuth, (_req: Request, res: Response) => {
     res.json({
       revision: getRevision(db),
+      departments: listDepartments(db),
       technicians: listTechnicians(db),
       entries: listEntries(db),
     });
@@ -141,6 +146,41 @@ export function registerRoutes(app: Express, ctx: RouteContext): void {
   app.delete('/api/entries/:id', requireAdmin, (req: Request, res: Response) => {
     try {
       const revision = deleteEntry(db, String(req.params.id));
+      hub.broadcast(revision);
+      res.json({ revision });
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  // ---- departments ---------------------------------------------------------
+  app.get('/api/departments', requireAuth, (_req: Request, res: Response) => {
+    res.json(listDepartments(db));
+  });
+
+  app.post('/api/departments', requireAdmin, (req: Request, res: Response) => {
+    try {
+      const { department, revision } = createDepartment(db, req.body ?? {});
+      hub.broadcast(revision);
+      res.status(201).json({ department, revision });
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  app.patch('/api/departments/:id', requireAdmin, (req: Request, res: Response) => {
+    try {
+      const { department, revision } = updateDepartment(db, String(req.params.id), req.body ?? {});
+      hub.broadcast(revision);
+      res.json({ department, revision });
+    } catch (err) {
+      sendError(res, err);
+    }
+  });
+
+  app.delete('/api/departments/:id', requireAdmin, (req: Request, res: Response) => {
+    try {
+      const revision = deleteDepartment(db, String(req.params.id));
       hub.broadcast(revision);
       res.json({ revision });
     } catch (err) {

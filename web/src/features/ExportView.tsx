@@ -1,10 +1,12 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { MONTH_NAMES_IT } from '@shared/periods';
 import type { TabKey } from '../components/Layout';
 import { useAuth } from '../context/AuthContext';
 import { useData } from '../context/DataContext';
+import { useFilters } from '../context/FiltersContext';
 import { ApiError } from '../lib/api';
+import { matchesDepartment } from '../lib/filters';
 import type { BackupPayload } from '../lib/types';
 
 function csvCell(value: unknown): string {
@@ -14,12 +16,21 @@ function csvCell(value: unknown): string {
 
 export function ExportView({ onNavigate }: { onNavigate: (tab: TabKey) => void }) {
   const { role } = useAuth();
-  const { entries, technicians, restore } = useData();
+  const { entries, technicians, departments, restore } = useData();
+  const { departmentId } = useFilters();
   const fileRef = useRef<HTMLInputElement>(null);
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
 
+  const scopedEntries = useMemo(
+    () => entries.filter((entry) => matchesDepartment(entry.departmentId, departmentId)),
+    [entries, departmentId],
+  );
+
+  const departmentName = (id: string | null) =>
+    departments.find((department) => department.id === id)?.name ?? '—';
+
   const rows = () =>
-    entries.map((entry) => {
+    scopedEntries.map((entry) => {
       const tech = technicians.find((t) => t.id === entry.technicianId);
       const presence = Number(entry.hoursPresence) || 0;
       const worked = Number(entry.hoursWorked) || 0;
@@ -31,6 +42,7 @@ export function ExportView({ onNavigate }: { onNavigate: (tab: TabKey) => void }
             ? `Settimana ${entry.weekNumber}/${entry.weekYear}`
             : `Mese ${MONTH_NAMES_IT[entry.calendarMonth]}`,
         mese: MONTH_NAMES_IT[entry.calendarMonth],
+        reparto: departmentName(entry.departmentId),
         tecnico: tech?.name ?? 'N/D',
         qualifica: tech?.role ?? 'N/D',
         presenza: presence,
@@ -39,6 +51,7 @@ export function ExportView({ onNavigate }: { onNavigate: (tab: TabKey) => void }
         daFatturare: Number(entry.hoursToBeBilled) || 0,
         produttivita: presence > 0 ? Number(((worked / presence) * 100).toFixed(1)) : 0,
         efficienza: worked > 0 ? Number(((billed / worked) * 100).toFixed(1)) : 0,
+        resa: presence > 0 ? Number(((billed / presence) * 100).toFixed(1)) : 0,
         note: entry.notes ?? '',
       };
     });
@@ -48,6 +61,7 @@ export function ExportView({ onNavigate }: { onNavigate: (tab: TabKey) => void }
       Anno: row.anno,
       Periodo: row.periodo,
       Mese: row.mese,
+      Reparto: row.reparto,
       Tecnico: row.tecnico,
       Qualifica: row.qualifica,
       'Ore Presenza': row.presenza,
@@ -56,6 +70,7 @@ export function ExportView({ onNavigate }: { onNavigate: (tab: TabKey) => void }
       'Ore da Fatturare': row.daFatturare,
       'Produttività (%)': row.produttivita,
       'Efficienza (%)': row.efficienza,
+      'Resa (%)': row.resa,
       Note: row.note,
     }));
     const worksheet = XLSX.utils.json_to_sheet(data);
@@ -69,6 +84,7 @@ export function ExportView({ onNavigate }: { onNavigate: (tab: TabKey) => void }
       'Anno',
       'Periodo',
       'Mese',
+      'Reparto',
       'Tecnico',
       'Qualifica',
       'Presenza',
@@ -77,6 +93,7 @@ export function ExportView({ onNavigate }: { onNavigate: (tab: TabKey) => void }
       'Da Fatturare',
       'Produttivita',
       'Efficienza',
+      'Resa',
       'Note',
     ];
     const lines = rows().map((row) =>
@@ -84,6 +101,7 @@ export function ExportView({ onNavigate }: { onNavigate: (tab: TabKey) => void }
         row.anno,
         row.periodo,
         row.mese,
+        row.reparto,
         row.tecnico,
         row.qualifica,
         row.presenza,
@@ -92,12 +110,12 @@ export function ExportView({ onNavigate }: { onNavigate: (tab: TabKey) => void }
         row.daFatturare,
         row.produttivita,
         row.efficienza,
+        row.resa,
         row.note,
       ]
         .map(csvCell)
         .join(','),
     );
-    // BOM per Excel
     const csv = '\uFEFF' + [headers.map(csvCell).join(','), ...lines].join('\r\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const link = document.createElement('a');
@@ -130,11 +148,12 @@ export function ExportView({ onNavigate }: { onNavigate: (tab: TabKey) => void }
   };
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6 sm:space-y-8">
       <div>
-        <h1 className="text-3xl font-extrabold text-white tracking-tight">Esportazione & stampa report</h1>
+        <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">Stampa ed esportazione</h1>
         <p className="text-sm text-gray-400 mt-1">
-          Scarica i dati in Excel, CSV o stampa il report. Il backup completo è disponibile per l'admin.
+          Scarica i dati in Excel o CSV (rispettano il reparto selezionato) oppure stampa il <strong>report
+          mensile</strong> del mese e reparto correnti.
         </p>
       </div>
 
@@ -150,19 +169,19 @@ export function ExportView({ onNavigate }: { onNavigate: (tab: TabKey) => void }
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+        <div className="glass-panel p-5 sm:p-6 rounded-2xl flex flex-col justify-between">
           <div>
             <div className="text-3xl mb-3">📊</div>
             <h3 className="text-lg font-bold text-white">Esporta in Excel (.xlsx)</h3>
-            <p className="text-xs text-gray-400 mt-1">Foglio di calcolo con tutte le ore e le percentuali.</p>
+            <p className="text-xs text-gray-400 mt-1">Foglio di calcolo con ore, percentuali e reparto.</p>
           </div>
           <button onClick={exportToExcel} className="btn-gold mt-6 justify-center">
             Scarica Excel
           </button>
         </div>
 
-        <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between">
+        <div className="glass-panel p-5 sm:p-6 rounded-2xl flex flex-col justify-between">
           <div>
             <div className="text-3xl mb-3">📁</div>
             <h3 className="text-lg font-bold text-white">Esporta in CSV</h3>
@@ -173,11 +192,13 @@ export function ExportView({ onNavigate }: { onNavigate: (tab: TabKey) => void }
           </button>
         </div>
 
-        <div className="glass-panel p-6 rounded-2xl flex flex-col justify-between">
+        <div className="glass-panel p-5 sm:p-6 rounded-2xl flex flex-col justify-between">
           <div>
             <div className="text-3xl mb-3">🖨️</div>
-            <h3 className="text-lg font-bold text-white">Stampa / PDF</h3>
-            <p className="text-xs text-gray-400 mt-1">Modulo di stampa pulito: salvalo come PDF dal browser.</p>
+            <h3 className="text-lg font-bold text-white">Stampa report mensile</h3>
+            <p className="text-xs text-gray-400 mt-1">
+              Stampa il report del mese e del reparto selezionati (salvalo come PDF dal browser).
+            </p>
           </div>
           <button onClick={() => window.print()} className="btn-gold mt-6 justify-center">
             Stampa / Salva PDF
@@ -186,12 +207,11 @@ export function ExportView({ onNavigate }: { onNavigate: (tab: TabKey) => void }
       </div>
 
       {role === 'admin' && (
-        <div className="glass-panel p-6 rounded-2xl border border-gray-800">
+        <div className="glass-panel p-5 sm:p-6 rounded-2xl border border-gray-800">
           <h3 className="text-lg font-bold text-white mb-4">💾 Backup del database</h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-center">
             <p className="text-xs text-gray-400 md:col-span-1">
-              Il backup automatico giornaliero resta sul server (30 giorni). Qui puoi scaricarlo o ripristinarlo da
-              qui.
+              Il backup automatico giornaliero resta sul server (30 giorni). Qui puoi scaricarlo o ripristinarlo.
             </p>
             <a href="/api/backup" className="btn-dark justify-center">
               ⬇️ Scarica backup JSON
@@ -216,7 +236,7 @@ export function ExportView({ onNavigate }: { onNavigate: (tab: TabKey) => void }
               ⬆️ Ripristina da backup JSON
             </button>
             <button onClick={() => onNavigate('technicians')} className="text-xs text-amber-400 hover:underline">
-              Gestisci tecnici →
+              Gestisci tecnici e reparti →
             </button>
           </div>
         </div>

@@ -37,9 +37,18 @@ async function viewerAgent() {
   return agent;
 }
 
-async function createTech(agent: request.Agent, name = 'Marco Rossi') {
-  const res = await agent.post('/api/technicians').send({ name, role: 'Meccanico' }).expect(201);
-  return res.body.technician as { id: string };
+async function firstDepartmentId(agent: request.Agent): Promise<string> {
+  const res = await agent.get('/api/departments').expect(200);
+  return (res.body as { id: string }[])[0].id;
+}
+
+async function createTech(agent: request.Agent, name = 'Marco Rossi', departmentId?: string) {
+  const dept = departmentId ?? (await firstDepartmentId(agent));
+  const res = await agent
+    .post('/api/technicians')
+    .send({ name, role: 'Meccanico', departmentId: dept })
+    .expect(201);
+  return res.body.technician as { id: string; departmentId: string };
 }
 
 beforeEach(() => {
@@ -263,5 +272,102 @@ describe('realtime', () => {
       .expect(200);
     const after = await admin.get('/api/revision').expect(200);
     expect(after.body.revision).toBeGreaterThan(before.body.revision);
+  });
+});
+
+describe('reparti', () => {
+  it('lo snapshot iniziale contiene il reparto predefinito', async () => {
+    const admin = await adminAgent();
+    const res = await admin.get('/api/snapshot').expect(200);
+    expect(res.body.departments).toHaveLength(1);
+    expect(res.body.departments[0].name).toBe('Generale');
+  });
+
+  it('crea, rinomina ed elimina un reparto vuoto', async () => {
+    const admin = await adminAgent();
+    const created = await admin
+      .post('/api/departments')
+      .send({ name: 'Meccanica', color: '#10b981' })
+      .expect(201);
+    const id = created.body.department.id;
+
+    const renamed = await admin.patch(`/api/departments/${id}`).send({ name: 'Officina' }).expect(200);
+    expect(renamed.body.department.name).toBe('Officina');
+
+    await admin.delete(`/api/departments/${id}`).expect(200);
+    const list = await admin.get('/api/departments').expect(200);
+    expect(list.body).toHaveLength(1);
+  });
+
+  it('rifiuta un nome duplicato (senza distinzione maiuscole)', async () => {
+    const admin = await adminAgent();
+    await admin.post('/api/departments').send({ name: 'Meccanica' }).expect(201);
+    const res = await admin.post('/api/departments').send({ name: 'meccanica' }).expect(409);
+    expect(res.body.code).toBe('DEPT_NAME_TAKEN');
+  });
+
+  it('non elimina un reparto con tecnici', async () => {
+    const admin = await adminAgent();
+    const created = await admin.post('/api/departments').send({ name: 'Elettrauto' }).expect(201);
+    const id = created.body.department.id;
+    await createTech(admin, 'Andrea Verdi', id);
+    const res = await admin.delete(`/api/departments/${id}`).expect(409);
+    expect(res.body.code).toBe('DEPT_HAS_TECHNICIANS');
+  });
+
+  it('non elimina un reparto usato da righe storiche', async () => {
+    const admin = await adminAgent();
+    const from = await admin.post('/api/departments').send({ name: 'Da chiudere' }).expect(201);
+    const to = await admin.post('/api/departments').send({ name: 'Nuovo' }).expect(201);
+    const tech = await createTech(admin, 'Luca Bianchi', from.body.department.id);
+    await admin
+      .put('/api/entries')
+      .send({ technicianId: tech.id, periodType: 'week', weekYear: 2026, weekNumber: 14, hoursWorked: 10 })
+      .expect(200);
+    // sposto il tecnico nell'altro reparto: la riga storica resta nel vecchio
+    await admin.patch(`/api/technicians/${tech.id}`).send({ departmentId: to.body.department.id }).expect(200);
+    const res = await admin.delete(`/api/departments/${from.body.department.id}`).expect(409);
+    expect(res.body.code).toBe('DEPT_HAS_ENTRIES');
+  });
+});
+
+describe('fotografia del reparto sulle righe di ore', () => {
+  it('salva il reparto attuale e lo conserva in modifica', async () => {
+    const admin = await adminAgent();
+    const a = await admin.post('/api/departments').send({ name: 'Reparto A' }).expect(201);
+    const b = await admin.post('/api/departments').send({ name: 'Reparto B' }).expect(201);
+    const tech = await createTech(admin, 'Stefano Neri', a.body.department.id);
+
+    const first = await admin
+      .put('/api/entries')
+      .send({ technicianId: tech.id, periodType: 'week', weekYear: 2026, weekNumber: 14, hoursWorked: 10 })
+      .expect(200);
+    expect(first.body.entry.departmentId).toBe(a.body.department.id);
+
+    // cambio reparto al tecnico
+    await admin.patch(`/api/technicians/${tech.id}`).send({ departmentId: b.body.department.id }).expect(200);
+
+    // la riga vecchia, se modificata, resta nel vecchio reparto
+    const updated = await admin
+      .put('/api/entries')
+      .send({ technicianId: tech.id, periodType: 'week', weekYear: 2026, weekNumber: 14, hoursWorked: 12 })
+      .expect(200);
+    expect(updated.body.entry.departmentId).toBe(a.body.department.id);
+
+    // una riga nuova prende il reparto nuovo
+    const next = await admin
+      .put('/api/entries')
+      .send({ technicianId: tech.id, periodType: 'week', weekYear: 2026, weekNumber: 20, hoursWorked: 9 })
+      .expect(200);
+    expect(next.body.entry.departmentId).toBe(b.body.department.id);
+  });
+
+  it('richiede un reparto valido alla creazione del tecnico', async () => {
+    const admin = await adminAgent();
+    await admin.post('/api/technicians').send({ name: 'Senza reparto' }).expect(400);
+    await admin
+      .post('/api/technicians')
+      .send({ name: 'Reparto inesistente', departmentId: 'nope' })
+      .expect(400);
   });
 });

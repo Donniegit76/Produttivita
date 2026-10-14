@@ -4,12 +4,12 @@ import Database from 'better-sqlite3';
 
 export type DB = Database.Database;
 
-interface Migration {
+export interface Migration {
   id: string;
   sql: string;
 }
 
-const MIGRATIONS: Migration[] = [
+export const MIGRATIONS: Migration[] = [
   {
     id: '001_init',
     sql: `
@@ -57,9 +57,37 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    id: '002_departments',
+    sql: `
+      CREATE TABLE IF NOT EXISTS departments (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        color TEXT NOT NULL DEFAULT '#06b6d4',
+        created_at TEXT NOT NULL
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS ux_departments_name
+        ON departments(name COLLATE NOCASE);
+
+      ALTER TABLE technicians ADD COLUMN department_id TEXT REFERENCES departments(id);
+      ALTER TABLE entries ADD COLUMN department_id TEXT;
+
+      INSERT INTO departments (id, name, color, created_at)
+        VALUES ('dept-generale', 'Generale', '#06b6d4', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+      UPDATE technicians SET department_id = 'dept-generale' WHERE department_id IS NULL;
+      UPDATE entries
+        SET department_id = (SELECT department_id FROM technicians t WHERE t.id = entries.technician_id)
+        WHERE department_id IS NULL;
+
+      CREATE INDEX IF NOT EXISTS ix_technicians_department ON technicians(department_id);
+      CREATE INDEX IF NOT EXISTS ix_entries_department ON entries(department_id);
+    `,
+  },
 ];
 
-function migrate(db: DB): void {
+/** Applica le migrazioni non ancora eseguite (di default tutte). */
+export function applyMigrations(db: DB, migrations: Migration[] = MIGRATIONS): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       id TEXT PRIMARY KEY,
@@ -76,7 +104,7 @@ function migrate(db: DB): void {
       new Date().toISOString(),
     );
   });
-  for (const migration of MIGRATIONS) {
+  for (const migration of migrations) {
     if (!applied.has(migration.id)) apply(migration);
   }
 }
@@ -90,6 +118,6 @@ export function openDatabase(dbPath: string): DB {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
-  migrate(db);
+  applyMigrations(db);
   return db;
 }

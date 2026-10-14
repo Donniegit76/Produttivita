@@ -1,4 +1,12 @@
-import type { BackupPayload, Entry, EntryInput, Role, Snapshot, Technician } from './types';
+import type {
+  BackupPayload,
+  Department,
+  Entry,
+  EntryInput,
+  Role,
+  Snapshot,
+  Technician,
+} from './types';
 
 export class ApiError extends Error {
   constructor(
@@ -55,6 +63,20 @@ export const api = {
     ),
   deleteTechnician: (id: string) =>
     request<{ revision: number }>(`/api/technicians/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  createDepartment: (input: { name: string; color?: string }) =>
+    request<{ department: Department; revision: number }>('/api/departments', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  updateDepartment: (id: string, input: { name?: string; color?: string }) =>
+    request<{ department: Department; revision: number }>(
+      `/api/departments/${encodeURIComponent(id)}`,
+      { method: 'PATCH', body: JSON.stringify(input) },
+    ),
+  deleteDepartment: (id: string) =>
+    request<{ revision: number }>(`/api/departments/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     }),
   restore: (payload: BackupPayload) =>

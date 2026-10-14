@@ -216,6 +216,14 @@ body {
   display: none;
 }
 
+/* Mobile: campi a 16px per evitare lo zoom automatico di iOS al focus */
+@media (max-width: 767px) {
+  .workshop-input,
+  .workshop-select {
+    font-size: 16px;
+  }
+}
+
 @media print {
   body {
     background: #ffffff !important;

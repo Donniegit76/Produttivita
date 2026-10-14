@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../context/AuthContext';
 import { DataProvider } from '../context/DataContext';
+import { FiltersProvider } from '../context/FiltersContext';
 import { Weekly } from '../features/Weekly';
 import type { Role } from '../lib/types';
 
@@ -19,6 +20,7 @@ const technician = {
   avatarColor: '#f59e0b',
   targetHours: 40,
   active: true,
+  departmentId: 'dept-generale',
   createdAt: '',
 };
 
@@ -35,7 +37,13 @@ function mockApi(role: Role) {
       text: async () => JSON.stringify(data),
     });
     if (url.endsWith('/api/me')) return reply({ role });
-    if (url.endsWith('/api/snapshot')) return reply({ revision: 1, technicians: [technician], entries: [] });
+    if (url.endsWith('/api/snapshot'))
+      return reply({
+        revision: 1,
+        departments: [{ id: 'dept-generale', name: 'Generale', color: '#06b6d4', createdAt: '', technicianCount: 1 }],
+        technicians: [technician],
+        entries: [],
+      });
     if (url.endsWith('/api/entries') && method === 'PUT') {
       return reply({
         entry: { ...body, id: 'entry-1', updatedAt: new Date().toISOString() },
@@ -53,7 +61,9 @@ function renderWithProviders() {
   return render(
     <AuthProvider>
       <DataProvider>
-        <Weekly />
+        <FiltersProvider>
+          <Weekly />
+        </FiltersProvider>
       </DataProvider>
     </AuthProvider>,
   );
@@ -72,8 +82,8 @@ describe('autosave', () => {
     const calls = mockApi('admin');
     renderWithProviders();
 
-    const input = await screen.findByLabelText('Ore Lavorate (Ol) Marco Rossi');
-    fireEvent.change(input, { target: { value: '12' } });
+    const inputs = await screen.findAllByLabelText('Lavorate Marco Rossi');
+    fireEvent.change(inputs[0], { target: { value: '12' } });
 
     await waitFor(
       () => {
@@ -89,7 +99,7 @@ describe('autosave', () => {
     mockApi('viewer');
     renderWithProviders();
 
-    const input = await screen.findByLabelText('Ore Lavorate (Ol) Marco Rossi');
-    expect(input).toBeDisabled();
+    const inputs = await screen.findAllByLabelText('Lavorate Marco Rossi');
+    expect(inputs[0]).toBeDisabled();
   });
 });

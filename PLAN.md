@@ -1,162 +1,116 @@
-# Fast_Prod 3.0 — Riscrittura con database SQL, realtime e ruoli
+# Fast_Prod — Piani di lavoro
 
-## Perché riscrivere (diagnosi in breve)
+---
 
-L'app attuale ha tre difetti strutturali, non typo isolati:
+# PIANO ATTIVO — v3.1: bug stampa, modifica tecnici, reparti, mobile
 
-1. **Autosave rotto**: `saveEntryToServer` / `saveTechnicianToServer` usano una variabile assegnata *dentro* l'updater di React (`setEntries(prev => ...)`), che React esegue in modo differito → la POST parte quasi sempre con valore `null` e la modifica resta solo in locale.
-2. **Nessun realtime**: i dati si caricano solo al montaggio della pagina; nessun canale di push verso gli altri dispositivi.
-3. **Doppia fonte di verità e "DB" JSON**: `localStorage` + file JSON senza transazioni, con upsert che ignora il mese, integrità referenziale assente e CDN obbligatorie (app inutilizzabile su LAN isolata).
+## Stato: COMPLETATO (in attesa di collaudo su LAN)
 
-Correggere in place significherebbe riscrivere sync, persistenza e modello dati dentro un monolite di 1503 righe senza moduli né test. Si riscrive l'architettura conservando UI, estetica e funzionalità.
+Implementato e verificato in locale: migrazione `002_departments`, API reparti con regole, snapshot del
+reparto sulle righe, selettore globale, modifica tecnici, report mensile stampabile con colonna Resa,
+mobile a schede. Test: **33 backend + 11 frontend** verdi; `typecheck` e `build` OK; smoke test del bundle
+di produzione verificato (reparto creato, tecnico assegnato, riga con reparto, eliminazione bloccata con 409).
+
+## Obiettivi richiesti
+
+1. **Bug stampa**: il tasto Stampa deve produrre il **report mensile**, non la pagina corrente.
+2. **Modifica tecnici**: poter correggere nome, ruolo e colore di un tecnico esistente.
+3. **Mobile**: interfaccia ottimizzata per telefono.
+4. **Reparti**: reparti separati, con classifiche proprie, selezionabili da menu a tendina.
 
 ## Decisioni confermate
 
 | # | Tema | Decisione |
 |---|------|-----------|
-| 1 | Dove gira | PC Ubuntu Server 24.04, Docker; **tutto in un unico container** (frontend compilato + API + DB) |
-| 2 | Migrazione dati | **Nessuna** (erano dati di prova) → si parte con database vuoto |
-| 3 | Ruoli | **Admin** (inserisce/modifica) e **viewer** (password condivisa, sola lettura); controllo anche lato server |
-| 4 | Granularità | Righe **settimanali per tecnico** + possibilità di riga **mensile per tecnico** |
-| 5 | Conflitto settimana/mensile | **Blocco alla fonte**: per tecnico/mese o settimane o totale mensile, mai entrambi |
-| 6 | Settimana a cavallo di due mesi | **Maggioranza dei giorni** (convenzione ISO), range di date sempre mostrato in UI |
-| 7 | Realtime | **SSE** (push immediato) + polling leggero di sicurezza ogni 30 s |
-| 8 | Frontend | **Vite + React + TypeScript + Tailwind** compilato; zero CDN, estetica attuale |
-| 9 | Backup | **Giornaliero automatico** (30 giorni di retention) + **pulsante nell'interfaccia** per scaricare il backup e ripristinare da file (admin) |
-| 10 | Tecnici | **Disattivazione** come flusso normale; cancellazione definitiva solo se non ha ore |
-| 11 | Server irraggiungibile | **Banner di avviso e campi in sola lettura**: si fallisce in modo visibile, mai dati solo locali |
+| 1 | Appartenenza | **Un solo reparto per tecnico** (campo sul tecnico) |
+| 2 | Gestione reparti | **L'admin li crea/rinomina/elimina** da interfaccia; eliminazione bloccata se contiene tecnici |
+| 3 | Storico | **Fotografia al salvataggio**: ogni riga di ore ricorda il reparto di quel momento |
+| 4 | Selettore | **Un unico menu reparto nell'header** ("Tutti i reparti" di default) che filtra tutte le viste |
+| 5 | Stampa | **Report mensile dedicato** (mese + reparto correnti, top performer, tabella, totali), senza grafici. Colonna aggiuntiva **Resa** = ore fatturate / ore presenza |
+| 6 | Mobile | **Card sotto il breakpoint tablet, tabelle su desktop** |
+| 7 | Disattivati | Nei **report** compaiono anche i tecnici disattivati con ore nel periodo; in **inserimento** solo gli attivi |
 
-## Architettura target
-
-```
-┌───────────────────────────── Container fast_prod ─────────────────────────────┐
-│  Node 22 + Express                                                             │
-│   ├─ /api/*        REST + login + backup + SSE (/api/events)                   │
-│   ├─ /             frontend statico compilato (Vite build)                     │
-│   └─ /app/data     VOLUME DOCKER                                               │
-│        ├─ fast_prod.sqlite   (WAL, foreign_keys ON)                            │
-│        └─ backups/*.sqlite.gz (job giornaliero 03:00 Europe/Rome, retention 30)│
-└────────────────────────────────────────────────────────────────────────────────┘
-        ▲ LAN officina                  ▲ LAN officina
-   admin (PC)                        viewer (telefono) — sola lettura
-```
-
-Struttura del repo:
-
-```
-Produttivita/
-├── docker-compose.yml          # servizio unico, porta 8085→8080, volume ./data, healthcheck
-├── Dockerfile                  # multi-stage: build web (node) → runtime node:22-bookworm-slim
-├── .env.example                # ADMIN_PASSWORD, VIEWER_PASSWORD, SESSION_SECRET, TZ (il .env reale NON va in git)
-├── server/src/{index,db,auth,realtime,routes/*}.ts, migrations/*.sql, tests/
-├── shared/periods.ts           # calcolo ISO week → mese di maggioranza (usato da server e web)
-└── web/src/{features/*,components/*,lib/api.ts,hooks/{useAutosave,useRealtime}.ts}
-```
-
-## Modello dati (SQLite, schema v1)
+## Schema dati (migrazione `002_departments`)
 
 ```sql
-technicians(
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL,
-  avatar_color TEXT, target_hours REAL DEFAULT 40,
-  active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
-);
+departments(id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            color TEXT NOT NULL DEFAULT '#06b6d4', created_at TEXT NOT NULL)
 
-entries(
-  id TEXT PRIMARY KEY,
-  technician_id TEXT NOT NULL REFERENCES technicians(id) ON DELETE RESTRICT,
-  period_type TEXT NOT NULL CHECK (period_type IN ('week','month')),
-  week_year INTEGER, week_number INTEGER,          -- solo period_type='week'
-  calendar_year INTEGER NOT NULL,                  -- anno/mese effettivi di aggregazione
-  calendar_month INTEGER NOT NULL CHECK (calendar_month BETWEEN 0 AND 11),
-  hours_presence REAL NOT NULL DEFAULT 0, hours_worked REAL NOT NULL DEFAULT 0,
-  hours_billed REAL NOT NULL DEFAULT 0, hours_to_be_billed REAL NOT NULL DEFAULT 0,
-  notes TEXT, updated_at TEXT NOT NULL
-);
-CREATE UNIQUE INDEX ux_entry_week  ON entries(technician_id, week_year, week_number) WHERE period_type='week';
-CREATE UNIQUE INDEX ux_entry_month ON entries(technician_id, calendar_year, calendar_month) WHERE period_type='month';
+ALTER TABLE technicians ADD COLUMN department_id TEXT REFERENCES departments(id);
+ALTER TABLE entries     ADD COLUMN department_id TEXT;   -- fotografia del reparto
+
+-- backfill dei dati esistenti
+INSERT INTO departments (id, name, ...) VALUES ('dept-generale', 'Generale', ...);
+UPDATE technicians SET department_id = 'dept-generale' WHERE department_id IS NULL;
+UPDATE entries SET department_id = (SELECT department_id FROM technicians t
+                                    WHERE t.id = entries.technician_id)
+                WHERE department_id IS NULL;
+CREATE INDEX ix_technicians_department ON technicians(department_id);
+CREATE INDEX ix_entries_department     ON entries(department_id, calendar_year, calendar_month);
 ```
 
-Regole di business applicate in transazione:
+Regole applicate dal server (in transazione):
 
-- **Mese di una settimana**: calcolato dal server (mai accettato dal client) contando i giorni della settimana ISO per mese; in risposta il server restituisce anche `weekStart`/`weekEnd` per la UI.
-- **Blocco conflitto**: prima di scrivere una settimana, verifica che non esista una riga mensile per quel tecnico/anno/mese, e viceversa → `409 PERIOD_CONFLICT` con messaggio chiaro in italiano.
-- **KPI invariati**: produttività = lavorate/presenza, efficienza = fatturate/lavorate, rendimento = fatturate/presenza, potenziale = (fatturate + da fatturare)/lavorate; Top Performer = 0,5·produttività + 0,5·efficienza.
-- **Tecnici**: disattivazione (`active=0`); `DELETE` consentito solo se non esistono ore → altrimenti `409`.
+- **Nuova riga di ore** → `department_id` = reparto attuale del tecnico.
+- **Modifica di una riga esistente** → **mantiene** il reparto storico (non lo riscrive).
+- **Eliminazione reparto** → `409` se ha tecnici assegnati **o** righe di ore che lo referenziano; in alternativa si rinomina.
+- **Nome reparto** → unico, senza distinzione maiuscole/minuscole.
 
-## API (tutte richiedono sessione, tranne login e health)
+## API
 
 | Rotta | Ruolo | Note |
 |---|---|---|
-| `POST /api/login`, `POST /api/logout`, `GET /api/me` | — / tutti | password admin o viewer → ruolo; cookie HttpOnly firmato, 30 gg |
-| `GET /api/health` | — | healthcheck Docker |
-| `GET /api/snapshot` | tutti | `{ revision, technicians, entries }` |
-| `GET /api/revision` | tutti | fallback polling: se cambia, il client rifà lo snapshot |
-| `GET /api/events` | tutti | SSE: eventi `{type:'changed', revision}` + heartbeat 25 s |
-| `PUT /api/entries` | admin | upsert idempotente per chiave periodo; applica regole mese/conflitto |
-| `POST/PATCH /api/technicians[/:id]` | admin | crea / aggiorna / disattiva |
-| `DELETE /api/technicians/:id` | admin | solo se senza ore |
-| `GET /api/backup` · `POST /api/restore` | admin | JSON dump / ripristino con **backup pre-ripristino automatico** |
+| `GET /api/departments` | tutti | elenco con conteggio tecnici |
+| `POST/PATCH/DELETE /api/departments[/:id]` | admin | delete → 409 se non vuoto |
+| `POST/PATCH /api/technicians` | admin | accettano `departmentId` |
+| `PUT /api/entries` | admin | salva il reparto al primo inserimento, lo conserva in modifica |
+| `GET /api/snapshot` | tutti | include anche `departments` |
 
-## Autosave e realtime lato client
+## Frontend
 
-- Ogni cella modificata aggiorna lo stato locale (ottimistico) e accoda un **salvataggio debounced (600 ms)**; indicatore in header: *Salvataggio… / Salvato 14:32 / Errore*.
-- Upsert idempotente ⇒ nessun doppio inserimento anche con richieste ripetute; su errore la cella viene marcata e si ritenta una volta.
-- Ogni scrittura incrementa la `revision`; SSE notifica tutti i client, che rifanno `GET /api/snapshot` solo se la loro revision è vecchia. Polling ogni 30 s come rete di sicurezza per i telefoni in standby.
-- Viewer: UI senza controlli di modifica **e** API che risponde `403` a ogni scrittura.
+- **Contesto filtri condiviso**: reparto selezionato + mese/anno di riferimento (oggi sono stato locale della vista Mensile). Serve al report stampabile richiamabile da qualsiasi vista.
+- **Header**: selettore reparto; il pulsante Stampa stampa **sempre** il report mensile del mese/reparto correnti.
+- **Tecnici**: nuova scheda "Reparti" (crea, rinomina inline, colore, elimina) e pulsante **Modifica** su ogni tecnico → form inline con nome, ruolo, colore, reparto (l'API `PATCH` esiste già).
+- **Report mensile stampabile**: componente dedicato (`.print-only`) con intestazione mese/anno/reparto, Top Performer, tabella per tecnico (presenza, lavorate, fatturate, da fatturare, produttività, efficienza, **resa** = fatturate/presenza) e riga totali; tutto il resto dell'app diventa `.no-print` durante la stampa. Attivato da: pulsante header, pulsante nella vista Mensile, pulsante in Stampa & Esporta.
+- **Colonna Resa** (fatturate/presenza) aggiunta anche alle tabelle a schermo Mensile e Annuale e all'export Excel/CSV, per coerenza con il report stampato.
+- **Filtro reparto** applicato a: dashboard (classifica e top performer), inserimento, mensile, annuale, export, report di stampa.
+- **Disattivati nei report**: le viste di analisi usano "chi ha ore nel periodo ∪ attivi", con badge "disattivato"; l'inserimento resta sui soli attivi.
+- **Mobile**: card per inserimento (2×2 campi numerici + note a tutta larghezza), card per le classifiche con KPI come badge; `font-size: 16px` sui campi per evitare lo zoom automatico iOS; bersagli touch più grandi. Da desktop le tabelle restano identiche a oggi.
+- **Export**: nuova colonna "Reparto" e rispetto del filtro attivo.
 
-## Deploy
-
-- `docker compose up -d --build` → `http://IP-SERVER:8085` (porta esterna invariata).
-- Un solo container, utente non-root, `restart: unless-stopped`, `TZ=Europe/Rome`, healthcheck su `/api/health`.
-- Persistenza: `./data:/app/data`. Backup giornaliero 03:00 in `./data/backups/`, retention 30 giorni.
-- Niente HTTPS/dominio in v1 (solo LAN, mai esposta): compatibile con Nginx Proxy Manager in futuro (per SSE: `proxy_buffering off`).
-
-## Passi di lavoro, verifiche e rischi
+## Passi, verifiche e rischi
 
 | # | Passo | Come si verifica | Rischio e mitigazione |
 |---|-------|------------------|------------------------|
-| 0 | Preparazione repo: branch `rewrite`, struttura cartelle, `.gitignore` (`data/`, `.env`), README | `git status` pulito; nessun file dati o password tracciato | Basso; doppio controllo delle esclusioni |
-| 1 | Backend base: Express + TS + SQLite (migrazioni, WAL, FK, transazioni) | Test automatici su migrazioni e vincoli; avvio locale → `/api/health` 200 e DB creato in cartella temporanea | `better-sqlite3` è un modulo nativo: base `bookworm-slim` con prebuild; fallback compilazione |
-| 2 | Autenticazione e ruoli | Test: 401 senza cookie, 403 su scrittura viewer, 200 admin; prova manuale login/logout | Cookie senza `Secure` (HTTP in LAN): accettato e documentato; rate-limit sul login |
-| 3 | API dati: entry/tecnici, mese di maggioranza, blocco conflitto, disattivazione, revision | Test di integrazione con casi limite: settimana 1 e 53 a cavallo d'anno, conflitto settimana+mensile, delete tecnico con ore, upsert ripetuto | Logica date sbagliata → fixture esplicite per ogni caso; tutto calcolato server-side |
-| 4 | Realtime: SSE + revision + polling | Test: due client ricevono l'evento dopo una scrittura; prova manuale con due browser aperti | Telefoni/proxy che chiudono la connessione → heartbeat + fallback polling 30 s |
-| 5 | Frontend: scaffold Vite+TS+Tailwind fedele all'estetica attuale, login, navigazione | `npm run build` senza errori; scheda Rete senza richieste a CDN; confronto visivo con la vecchia app | Fedeltà grafica → riuso dei design token attuali di `styles.css` |
-| 6 | Viste in sola lettura: dashboard, settimanale, mensile, annuale, tecnici, export/stampa | KPI confrontati a mano con numeri di prova; test unitari sul calcolo dei periodi | Regressioni nei KPI → test con valori noti e formule identiche |
-| 7 | Inserimento: griglia settimanale con autosave, modalità mensile, gestione tecnici | Manuale: modifica → indicatore "Salvato" → ricarica → dato presente; mix rifiutato con messaggio; viewer vede il dato apparire in <1 s | Autosave su rete lenta → debounce per cella + upsert idempotente; retry su errore |
-| 8 | Export/backup: Excel/CSV/stampa (librerie incluse nel bundle), backup/ripristino admin | Roundtrip backup → ripristino su DB di prova; file `.xlsx` apre correttamente; stampa pulita | Ripristino errato → conferma esplicita + backup pre-ripristino automatico |
-| 9 | Docker: Dockerfile multi-stage, compose, volume, healthcheck, job backup | *(lo lanci tu)* `docker compose up -d --build`; `down`+`up` → dati ancora presenti; file in `./data/backups`; log senza errori | Permessi volume → utente non-root con `chown` nel Dockerfile; build nativa |
-| 10 | Collaudo su LAN reale + documentazione | Checklist su PC e telefono: ruoli, autosave, realtime, conflitto mensile, backup, stampa | iOS/Android che sospendono SSE → fallback polling; nessun bug bloccante residuo |
+| 0 | Migrazione `002` + backfill "Generale" | test su un DB creato con la `001` e popolato: dopo la migrazione tecnici/righe hanno reparto e i KPI non cambiano | migrazione su DB già in uso → testare su una **copia** del `fast_prod.sqlite` prima del deploy |
+| 1 | API reparti + snapshot reparto su tecnici/entries | test: CRUD, 409 su delete con tecnici/righe, reparto mantenuto in modifica riga, nomi duplicati rifiutati | regole di delete rigide → rinomina come alternativa documentata |
+| 2 | Contesto filtri condiviso + selettore nell'header | test: cambiando reparto cambiano classifica, mensile, annuale ed export; "Tutti i reparti" torna a mostrare tutto | stato condiviso da introdurre senza rompere weekly/monthly attuali |
+| 3 | Gestione reparti e modifica tecnico in UI | manuale: rinomina reparto, correggi nome/ruolo/colore, cambia reparto a un tecnico → riflesso su tutti i dispositivi via SSE | validazione nome vuoto/duplicato |
+| 4 | Filtro applicato a tutte le viste + disattivati nei report | test: tecnico disattivato con ore di marzo compare nel report di marzo con badge; a aprile no | dimenticare una vista → checklist delle 6 viste |
+| 5 | Stampa report mensile (con colonna Resa) + fix dei 3 pulsanti | manuale: stampa da Dashboard, Settimanale ed Export → esce il report mensile del reparto/mese correnti, con la colonna Resa; anteprima PDF pulita | differenze tra browser; contenuto principale da nascondere in stampa (`.no-print`) |
+| 6 | Mobile: card e ritocchi | manuale su telefono reale: inserire le ore, leggere classifiche, nessuno zoom iOS al focus | regressioni desktop → tabelle invariate sopra il breakpoint |
+| 7 | Export con colonna reparto + aggiornamento README | manuale: xlsx e CSV contengono il reparto e rispettano il filtro | — |
+| 8 | Collaudo su LAN e push | checklist: due dispositivi, modifica tecnico, filtro reparto, stampa, mobile | — |
 
-## Assunzioni da confermare (le rivedi nel piano)
+## Assunzioni e punti aperti da confermare
 
-- Accesso via `http://IP-SERVER:8085`, nessun dominio né HTTPS in v1.
-- Un solo admin con password condivisa (titolare/ufficio); viewer con password unica condivisa. Password in `.env` sul server, mai in git.
-- Si parte **senza dati**; i tecnici reali li inserisci dall'interfaccia.
-- Mantengo tutte le funzioni attuali: 6 viste, coppa Top Performer, export Excel/CSV, stampa.
-- Node 22 sul server (già presente anche in locale per sviluppo e test).
+- Esistono già dati reali? La migrazione è scritta per non perderli, ma **va provata su una copia** prima di aggiornare il container.
+- Il reparto è **obbligatorio** per ogni tecnico; i dati esistenti finiscono in **"Generale"**, rinominabile.
+- Eliminazione di un reparto **anche** quando è referenziato da righe storiche: in quel caso resta solo la rinomina (conseguenza della scelta "fotografia").
+- Modificare una riga vecchia **non** sposta il suo reparto storico.
+- Il filtro reparto **non** viene ricordato tra sessioni (riparte da "Tutti i reparti"); dimmi se lo vuoi persistente.
+- `targetHours` resta presente nel database ma non in interfaccia (non richiesto).
+- Il viewer può stampare ed esportare; solo l'admin modifica.
 
-## Stato di avanzamento (aggiornato)
+## Fuori scope v3.1
 
-- **Passi 0-8 completati** sul branch `rewrite` (commit `286276e`): backend SQLite + API + SSE + ruoli,
-  frontend React/Vite/TS/Tailwind, autosave, backup/ripristino, export e stampa.
-- Verifiche eseguite in locale:
-  - `npm run typecheck` → nessun errore (server + web)
-  - `npm run test` → **24 test backend + 6 test frontend** verdi (inclusi autosave e ruoli)
-  - `npm run build` → build di produzione web + server senza errori
-  - smoke test del bundle di produzione: `/api/health`, login, creazione tecnico, snapshot e
-    frontend statico tutti OK
-- **Passi 9-10 restano a te** (Docker e collaudo in LAN):
+Multi-reparto per tecnico, spostamento massivo dello storico tra reparti, grafici nel report stampato, PWA installabile.
 
-  ```bash
-  cp env.example .env      # imposta ADMIN_PASSWORD, VIEWER_PASSWORD, SESSION_SECRET
-  docker compose up -d --build
-  ```
+---
+---
 
-  Verifica attesa: `http://IP-SERVER:8085` risponde; `docker compose down && docker compose up -d`
-  conserva i dati; compare un file in `data/backups/`; con due dispositivi aperti una modifica fatta
-  con l'admin appare sull'altro entro un secondo; il viewer non riesce a scrivere.
+# PIANO v3.0 — COMPLETATO (riferimento)
 
-## Fuori scope v1 (possibili estensioni future)
-
-Dettaglio per commessa/cliente, modalità offline con coda locale, più account admin con audit, HTTPS/dominio, notifiche, PWA installabile.
+Riscrittura con database SQLite in container, realtime SSE, ruoli admin/viewer, autosave e Docker.
+Tutti i passi 0–8 completati sul branch `rewrite`; collaudo Docker/LAN in corso.
+Dettaglio completo: `plan/2026-10-14_fast-prod-rewrite.md` (e storia git).

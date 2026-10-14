@@ -5,6 +5,7 @@ import type { Entry, Technician } from '../lib/types';
 const entry = (technicianId: string, values: Partial<Entry>): Entry => ({
   id: `${technicianId}-${Math.random()}`,
   technicianId,
+  departmentId: null,
   periodType: 'week',
   weekYear: 2026,
   weekNumber: 1,
@@ -26,6 +27,7 @@ const tech = (id: string, name: string): Technician => ({
   avatarColor: '#f59e0b',
   targetHours: 40,
   active: true,
+  departmentId: null,
   createdAt: '',
 });
 
