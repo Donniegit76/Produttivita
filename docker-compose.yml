@@ -1,9 +1,9 @@
 services:
   fast_prod:
+    image: ${IMAGE:-fast_prod:3}
     build:
       context: .
       dockerfile: Dockerfile
-    image: fast_prod:3
     container_name: fast_prod_app
     ports:
       # porta esterna 8085 → interna 8080

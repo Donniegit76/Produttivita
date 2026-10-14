@@ -106,6 +106,38 @@ dell'immagine.
 
 ---
 
+## Pubblicare e riusare l'immagine (Docker Hub)
+
+Immagine pubblica: `donniedream/fast_prod`.
+
+**Pubblicare** (dalla macchina con Docker, dopo aver pushato il codice):
+
+```bash
+# sostituisci 3.1 con la versione che vuoi taggare
+docker login -u donniedream
+docker build -t donniedream/fast_prod:3.1 -t donniedream/fast_prod:latest .
+docker push donniedream/fast_prod:3.1
+docker push donniedream/fast_prod:latest
+```
+
+**Usarla sul server** (senza costruire l'immagine in locale): nel `.env` imposta
+
+```bash
+IMAGE=donniedream/fast_prod:3.1
+```
+
+poi:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Con `IMAGE` non impostato, `docker compose up -d --build` continua a costruire l'immagine in locale.
+L'immagine non contiene segreti: password e dati vivono nel `.env` e nel volume `./data`.
+
+---
+
 ## Firewall
 
 - **Non serve** aprire porte sul router/firewall di rete: il port forwarding servirebbe solo per
