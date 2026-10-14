@@ -76,6 +76,11 @@ riscritta con **database SQLite**, **automatic saving**, **aggiornamento in temp
 
 Log: `docker compose logs -f`. Arresto: `docker compose down`.
 
+> **Permessi della cartella dati** — il container gira come utente non privilegiato `node`
+> (uid 1000) e deve poter scrivere in `./data`. Se vedi `SQLITE_CANTOPEN` nei log, la cartella è di
+> proprietà di `root`: correggi con `sudo chown -R $(id -u):$(id -g) data` e riavvia con
+> `docker compose up -d --force-recreate`.
+
 I dati vivono nella cartella `./data` (volume): sopravvivono a riavvii, aggiornamenti e ricostruzioni
 dell'immagine.
 

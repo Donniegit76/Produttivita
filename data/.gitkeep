@@ -1,0 +1,5 @@
+# Questa cartella è il volume persistente di Fast_Prod:
+# qui vivono il database SQLite e i backup giornalieri.
+#
+# Deve essere scrivibile dall'utente con cui gira il container (node, uid 1000).
+# Se il server usa un uid diverso: sudo chown -R <uid>:<gid> data
